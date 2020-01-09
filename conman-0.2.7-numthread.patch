@@ -1,0 +1,11 @@
+diff -urNp conman-0.2.7-orig/server-ipmi.c conman-0.2.7/server-ipmi.c
+--- conman-0.2.7-orig/server-ipmi.c	2011-04-22 01:23:49.000000000 +0200
++++ conman-0.2.7/server-ipmi.c	2016-11-01 16:32:38.967020201 +0100
+@@ -95,6 +95,7 @@ void ipmi_init(int num_consoles)
+         return;
+     }
+     num_threads = ((num_consoles - 1) / IPMI_ENGINE_CONSOLES_PER_THREAD) + 1;
++    num_threads = MIN(num_threads, IPMICONSOLE_THREAD_COUNT_MAX);
+ 
+     if (ipmiconsole_engine_init(num_threads, 0) < 0) {
+         log_err(0, "Unable to start IPMI SOL engine");

@@ -1,16 +1,17 @@
 Name:               conman
 Version:            0.2.7
-Release:            2%{?dist}
+Release:            3%{?dist}
 Summary:            ConMan - The Console Manager
 
 Group:              Applications/System
 License:            GPLv3+
-URL:                http://home.gna.org/conman/
-Source0:            http://download.gna.org/%{name}/%{version}/%{name}-%{version}.tar.bz2
+URL:                https://dun.github.io/conman/
+Source0:            https://github.com/dun/conman/releases/download/%{name}-%{version}/%{name}-%{version}.tar.bz2
 Source1:            %{name}.init
 Source2:            %{name}.logrotate
 Patch1:             conman-0.2.5-openfiles.patch
 Patch2:             conman-0.2.5-strftime.patch
+Patch3:             conman-0.2.7-numthread.patch
 BuildRoot:          %{_tmppath}/%{name}-%{version}-%{release}-root-%(%{__id_u} -n)
 
 Requires:           logrotate
@@ -38,6 +39,7 @@ Its features include:
 %setup -q
 %patch1 -b .openfiles -p1
 %patch2 -b .strftime -p1
+%patch3 -b .numthread -p1
 
 %build
 # not really lib material, more like share
@@ -108,6 +110,10 @@ fi
 %{_mandir}/*/*
 
 %changelog
+* Tue Nov  1 2016 Ondrej Vasik <ovasik@redhat.com> - 0.2.7-3
+- change project URL to current one (#1022502)
+- ensure num_threads <= IPMICONSOLE_THREAD_COUNT_MAX (#1022496)
+
 * Mon Oct  7 2013 Denys Vlasenko <dvlasenk@redhat.com> - 0.2.7-2
 - Enable IPMI feature.
 - Resolves: rhbz#951698.
