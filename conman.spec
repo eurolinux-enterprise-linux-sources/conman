@@ -1,6 +1,6 @@
 Name:               conman
 Version:            0.2.7
-Release:            5%{?dist}
+Release:            8%{?dist}
 Summary:            ConMan - The Console Manager
 
 Group:              Applications/System
@@ -18,6 +18,7 @@ Requires(post): systemd-units
 Requires(preun): systemd-units
 Requires(postun): systemd-units
 BuildRequires:      tcp_wrappers
+BuildRequires:      systemd-units
 
 %description
 ConMan is a serial console management program designed to support a large
@@ -118,6 +119,16 @@ fi
 %{_mandir}/*/*
 
 %changelog
+* Fri Jan 24 2014 Daniel Mach <dmach@redhat.com> - 0.2.7-8
+- Mass rebuild 2014-01-24
+
+* Tue Jan  7 2014 Denys Vlasenko <dvlasenk@redhat.com> - 0.2.7-7
+- Added "BuildRequires: systemd-units" to fix _unitdir expansion.
+- Resolves: rhbz#1048854.
+
+* Fri Dec 27 2013 Daniel Mach <dmach@redhat.com> - 0.2.7-6
+- Mass rebuild 2013-12-27
+
 * Tue May  7 2013 Denys Vlasenko <dvlasenk@redhat.com> - 0.2.7-5
 - Again fixed "License:" in spec file (GPLv2+ -> GPLv3+).
 
