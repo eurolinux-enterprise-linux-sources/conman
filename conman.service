@@ -1,0 +1,13 @@
+[Unit]
+Description=ConMan Console Management Daemon
+After=network.target
+
+[Service]
+Type=forking
+# For installations with large number of users, raise the limit
+# of open file descriptors:
+#LimitNOFILE=10000
+ExecStart=/usr/sbin/conmand -c /etc/conman.conf
+
+[Install]
+WantedBy=multi-user.target

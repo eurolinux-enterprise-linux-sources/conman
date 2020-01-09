@@ -1,0 +1,12 @@
+diff -urpN conman-0.2.5/etc/conman.sysconfig conman-0.2.5-openfiles/etc/conman.sysconfig
+--- conman-0.2.5/etc/conman.sysconfig	2007-05-01 05:46:18.000000000 +0200
++++ conman-0.2.5-openfiles/etc/conman.sysconfig	2011-12-14 10:34:57.362003774 +0100
+@@ -35,3 +35,8 @@
+ #   is not reloaded.
+ ##
+ # SIGHUP_RELOAD="1"
++
++##
++# Specify the maximum number of open files
++##
++# NOFILE=10000
