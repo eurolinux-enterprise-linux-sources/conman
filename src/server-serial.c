@@ -1,39 +1,41 @@
 /*****************************************************************************
- *  $Id: server-serial.c 902 2009-02-13 06:11:56Z dun $
+ *  $Id: server-serial.c 1037 2011-04-07 20:02:56Z chris.m.dunlap $
  *****************************************************************************
  *  Written by Chris Dunlap <cdunlap@llnl.gov>.
- *  Copyright (C) 2007-2009 Lawrence Livermore National Security, LLC.
+ *  Copyright (C) 2007-2011 Lawrence Livermore National Security, LLC.
  *  Copyright (C) 2001-2007 The Regents of the University of California.
  *  UCRL-CODE-2002-009.
  *
  *  This file is part of ConMan: The Console Manager.
- *  For details, see <http://home.gna.org/conman/>.
+ *  For details, see <http://conman.googlecode.com/>.
  *
- *  This is free software; you can redistribute it and/or modify it
- *  under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; either version 2 of the License, or
- *  (at your option) any later version.
+ *  ConMan is free software: you can redistribute it and/or modify it under
+ *  the terms of the GNU General Public License as published by the Free
+ *  Software Foundation, either version 3 of the License, or (at your option)
+ *  any later version.
  *
- *  This is distributed in the hope that it will be useful, but WITHOUT
+ *  ConMan is distributed in the hope that it will be useful, but WITHOUT
  *  ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
  *  FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
  *  for more details.
  *
- *  You should have received a copy of the GNU General Public License
- *  along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *  You should have received a copy of the GNU General Public License along
+ *  with ConMan.  If not, see <http://www.gnu.org/licenses/>.
  *****************************************************************************/
 
 
-#ifdef HAVE_CONFIG_H
-#  include "config.h"
+#if HAVE_CONFIG_H
+#  include <config.h>
 #endif /* HAVE_CONFIG_H */
 
 #include <assert.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <termios.h>
 #include <unistd.h>
 #include "common.h"
@@ -87,6 +89,34 @@ static speed_t int_to_bps(int val);
 static int bps_to_int(speed_t bps);
 static const char * parity_to_str(int parity);
 #endif /* !NDEBUG */
+
+
+int is_serial_dev(const char *dev, const char *cwd, char **path_ref)
+{
+    char         buf[PATH_MAX];
+    int          n;
+    struct stat  st;
+
+    assert(dev != NULL);
+
+    if ((dev[0] != '/') && (cwd != NULL)) {
+        n = snprintf(buf, sizeof(buf), "%s/%s", cwd, dev);
+        if ((n < 0) || (n >= sizeof(buf))) {
+            return(0);
+        }
+        dev = buf;
+    }
+    if (stat(dev, &st) < 0) {
+        return(0);
+    }
+    if (!S_ISCHR(st.st_mode)) {
+        return(0);
+    }
+    if (path_ref) {
+        *path_ref = create_string(dev);
+    }
+    return(1);
+}
 
 
 int parse_serial_opts(

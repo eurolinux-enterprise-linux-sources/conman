@@ -1,4 +1,4 @@
-.\" $Id: conman.conf.5.in 967 2009-05-18 21:30:44Z dun $
+.\" $Id: conman.conf.5.in 1059 2011-04-21 00:20:12Z chris.m.dunlap $
 
 .TH CONMAN.CONF 5 "@DATE@" "@PROJECT@-@VERSION@" "ConMan: The Console Manager"
 
@@ -107,7 +107,7 @@ not given, the file's location is relative to either \fBlogdir\fR (if
 defined) or the current working directory.  Intermediate directories
 will be created as needed.
 .TP
-\fBlogopts\fR \fB=\fR "(\fBsanitize\fR|\fBnosanitize\fR),(\fBtimestamp\fR|\fBnotimestamp\fR)"
+\fBlogopts\fR \fB=\fR "(\fBlock\fR|\fBnolock\fR),(\fBsanitize\fR|\fBnosanitize\fR),(\fBtimestamp\fR|\fBnotimestamp\fR)"
 Specifies global options for the console log files.  These options can be
 overridden on a per-console basis by specifying the \fBCONSOLE\fR \fBlogopts\fR
 keyword.  Note that options affecting the output of the console's logfile also
@@ -115,7 +115,10 @@ affect the output of the console's log-replay escape.  The valid \fBlogopts\fR
 include the following:
 .br
 .sp
-\fBsanitize\fR or \fBnosanitize\fR - sanitized log files convert non-printable
+\fBlock\fR or \fBnolock\fR - locked logs are protected with a write lock.
+.br
+.sp
+\fBsanitize\fR or \fBnosanitize\fR - sanitized logs convert non-printable
 characters into 7-bit printable characters.
 .br
 .sp
@@ -125,7 +128,7 @@ timestamp is generated when the first character following the line break is
 output.
 .br
 .sp
-The default is "\fBnosanitize\fR,\fBnotimestamp\fR".
+The default is "\fBlock\fR,\fBnosanitize\fR,\fBnotimestamp\fR".
 .TP
 \fBseropts\fR \fB=\fR "\fIbps\fR[,\fIdatabits\fR[\fIparity\fR[\fIstopbits\fR]]]"
 Specifies global options for local serial devices.  These options can be
@@ -150,30 +153,54 @@ for none, '\fBo\fR' for odd, and '\fBe\fR' for even.
 .sp
 The default is "9600,8n1" for 9600 bps, 8 data bits, no parity, and 1 stop bit.
 .TP
-\fBipmiopts\fR \fB=\fR "[\fIusername\fR[,\fIpassword\fR[,\fIK_g\fR]]]"
+\fBipmiopts\fR \fB=\fR "\fBU\fR:\fIstr\fR,\fBP\fR:\fIstr\fR,\fBK\fR:\fIstr\fR,\fBC\fR:\fIint\fR,\fBL\fR:\fIstr\fR,\fBW\fR:\fIflag\fR"
 Specifies global options for IPMI Serial-Over-LAN devices.  These options can
 be overridden on a per-console basis by specifying the \fBCONSOLE\fR
-\fBipmiopts\fR keyword.  This directive is only available if compiled with the
-"--with-freeipmi" option.  The valid \fBipmiopts\fR include the following:
+\fBIPMIOPTS\fR keyword.  This directive is only available if configured using
+the "--with-freeipmi" option.
 .br
 .sp
-\fIusername\fR is a string of at most 16 bytes that specifies the username with
+The \fBIPMIOPTS\fR string is parsed into comma-delimited substrings where each
+substring is of the form "\fIX\fR:\fIVALUE\fR".  "\fIX\fR" is a
+single-character case-insensitive key specifying the option type, and
+"\fIVALUE\fR" is its corresponding value.  The IPMI default will be used if
+either "\fIVALUE\fR" is omitted from the substring ("\fIX\fR:") or the
+substring is omitted altogether.  Note that since the \fBIPMIOPTS\fR string is
+delimited by commas, substring values cannot contain commas.
+.br
+.sp
+The valid \fBIPMIOPTS\fR substrings include the following (in any order):
+.br
+.sp
+\fBU\fR:\fIusername\fR - a string of at most 16 bytes for the username with
 which to authenticate to the BMCs serving the remote consoles.
 .br
 .sp
-\fIpassword\fR is a string of at most 20 bytes that specifies the password with
+\fBP\fR:\fIpassword\fR - a string of at most 20 bytes for the password with
 which to authenticate to the BMCs serving the remote consoles.
 .br
 .sp
-\fIK_g\fR is a string of at most 20 bytes that specifies the K_g key with which
+\fBK\fR:\fIK_g\fR - a string of at most 20 bytes for the K_g key with which
 to authenticate to the BMCs serving the remote consoles.
 .br
 .sp
-Both the \fIpassword\fR and \fIK_g\fR keys can be specified in either ASCII or
-hexadecimal; in the latter case, the string should begin with "0x" and contain
-at most 40 hexadecimal digits.  A \fIK_g\fR key entered in hexadecimal may
-contain embedded NUL characters, but any characters following the first NUL in
-the \fIpassword\fR key will be ignored.
+\fBC\fR:\fIcipher_suite\fR - an integer for the IPMI cipher suite ID.
+Refer to \fBipmiconsole(8)\fR for a list of currently supported IDs.
+.br
+.sp
+\fBL\fR:\fIprivilege_level\fR - the string "user", "op", or "admin".
+.br
+.sp
+\fBW\fR:\fIworkaround_flag\fR - a string or integer for an IPMI workaround.
+Refer to \fBipmiconsole(8)\fR for a list of currently supported flags.
+This substring may be repeated to specify multiple workaround flags.
+.br
+.sp
+Both the \fIpassword\fR and \fIK_g\fR values can be specified in either ASCII
+or hexadecimal; in the latter case, the string should begin with "0x" and
+contain at most 40 hexadecimal digits.  A \fIK_g\fR key entered in hexadecimal
+may contain embedded null characters, but any characters following the first
+null character in the \fIpassword\fR key will be ignored.
 
 .SH CONSOLE DIRECTIVES
 This directive defines an individual console being managed by the daemon.
@@ -204,17 +231,17 @@ file/script, and any additional \fIargs\fR are space-delimited); the
 console types.
 .br
 .sp
-A local unix domain socket connection is defined by the "unix:\fIpath\fR"
+A local Unix domain socket connection is defined by the "unix:\fIpath\fR"
 format (where "unix:" is the literal character string prefix and \fIpath\fR
 is the pathname of the local socket).
 .br
 .sp
 An IPMI Serial-Over-LAN connection is defined by the "ipmi:\fIhost\fR" format
-(where "ipmi" is the literal string and "\fIhost\fR" is a hostname or IPv4
+(where "ipmi:" is the literal string and \fIhost\fR is a hostname or IPv4
 address).
 .br
 .sp
-The '%N' character sequence will be replaced by the console name.
+The '\fB%N\fR' character sequence will be replaced by the console name.
 .TP
 \fBlog\fR \fB=\fR "\fIfile\fR"
 Specifies the file where console output is logged.  This string undergoes
@@ -287,17 +314,17 @@ replaced with underscores.
 Chris Dunlap <cdunlap@llnl.gov>
 
 .SH COPYRIGHT
-Copyright (C) 2007-2009 Lawrence Livermore National Security, LLC.
+Copyright (C) 2007-2011 Lawrence Livermore National Security, LLC.
 .br
 Copyright (C) 2001-2007 The Regents of the University of California.
 
-ConMan is free software; you can redistribute it and/or modify it under the
-terms of the GNU General Public License as published by the Free Software
-Foundation; either version 2 of the License, or (at your option) any later
-version.
+ConMan is free software: you can redistribute it and/or modify it under
+the terms of the GNU General Public License as published by the Free
+Software Foundation, either version 3 of the License, or (at your option)
+any later version.
 
 .SH "SEE ALSO"
 .BR conman (1),
 .BR conmand (8).
 .PP
-\fBhttp://home.gna.org/conman/\fR
+\fBhttp://conman.googlecode.com/\fR

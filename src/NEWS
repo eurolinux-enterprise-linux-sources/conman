@@ -1,3 +1,15 @@
+conman-0.2.7 (2011-04-21):
+- Fixed concurrency bugs in IPMI SOL connections.
+- Added support for IPMI SOL workaround flags and whatnot.
+- Added support for disabling fcntl locks on console logs.
+- Note: "--with-freeipmi" now requires freeipmi-1.0.4 or later.
+
+conman-0.2.6 (2010-06-15):
+- Changed license to GPLv3+.
+- Changed project homepage to <http://conman.googlecode.com/>.
+- Fixed bugs with IPMI SOL reconnects.
+- Fixed bug with process-driven reconnects.
+
 conman-0.2.5 (2009-05-19):
 - Fixed bug with consoles trapped in downed state causing poll loop to spin.
 - Added 'server coredump' & 'server coredumpdir' config directives.

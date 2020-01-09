@@ -1,40 +1,41 @@
 /*****************************************************************************
- *  $Id: server-telnet.c 969 2009-05-19 18:43:54Z dun $
+ *  $Id: server-telnet.c 1037 2011-04-07 20:02:56Z chris.m.dunlap $
  *****************************************************************************
  *  Written by Chris Dunlap <cdunlap@llnl.gov>.
- *  Copyright (C) 2007-2009 Lawrence Livermore National Security, LLC.
+ *  Copyright (C) 2007-2011 Lawrence Livermore National Security, LLC.
  *  Copyright (C) 2001-2007 The Regents of the University of California.
  *  UCRL-CODE-2002-009.
  *
  *  This file is part of ConMan: The Console Manager.
- *  For details, see <http://home.gna.org/conman/>.
+ *  For details, see <http://conman.googlecode.com/>.
  *
- *  This is free software; you can redistribute it and/or modify it
- *  under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; either version 2 of the License, or
- *  (at your option) any later version.
+ *  ConMan is free software: you can redistribute it and/or modify it under
+ *  the terms of the GNU General Public License as published by the Free
+ *  Software Foundation, either version 3 of the License, or (at your option)
+ *  any later version.
  *
- *  This is distributed in the hope that it will be useful, but WITHOUT
+ *  ConMan is distributed in the hope that it will be useful, but WITHOUT
  *  ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
  *  FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
  *  for more details.
  *
- *  You should have received a copy of the GNU General Public License
- *  along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *  You should have received a copy of the GNU General Public License along
+ *  with ConMan.  If not, see <http://www.gnu.org/licenses/>.
  *****************************************************************************/
 
 
-#ifdef HAVE_CONFIG_H
-#  include "config.h"
+#if HAVE_CONFIG_H
+#  include <config.h>
 #endif /* HAVE_CONFIG_H */
 
 #define TELCMDS
 #define TELOPTS
 
+#include <sys/types.h>                  /* include before in.h for bsd */
+#include <netinet/in.h>                 /* include before telnet.h for bsd */
 #include <arpa/telnet.h>
 #include <assert.h>
 #include <errno.h>
-#include <netinet/in.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -59,6 +60,37 @@ static int process_telnet_cmd(obj_t *telnet, int cmd, int opt);
 static char * opt2str(int opt, char *buf, int buflen);
 
 extern tpoll_t tp_global;               /* defined in server.c */
+
+
+int is_telnet_dev(const char *dev, char **host_ref, int *port_ref)
+{
+    char  buf[MAX_LINE];
+    char *p;
+    int   n;
+
+    assert(dev != NULL);
+
+    if (strlcpy(buf, dev, sizeof(buf)) >= sizeof(buf)) {
+        return(0);
+    }
+    if (!(p = strchr(buf, ':'))) {
+        return(0);
+    }
+    if ((n = strspn(p+1, "0123456789")) == 0) {
+        return(0);
+    }
+    if (p[ n + 1 ] != '\0') {
+        return(0);
+    }
+    *p++ = '\0';
+    if (host_ref) {
+        *host_ref = create_string(buf);
+    }
+    if (port_ref) {
+        *port_ref = atoi(p);
+    }
+    return(1);
+}
 
 
 obj_t * create_telnet_obj(server_conf_t *conf, char *name,
@@ -102,7 +134,7 @@ obj_t * create_telnet_obj(server_conf_t *conf, char *name,
     telnet->aux.telnet.timer = -1;
     telnet->aux.telnet.delay = TELNET_MIN_TIMEOUT;
     telnet->aux.telnet.iac = -1;
-    telnet->aux.telnet.conState = CONMAN_TELCON_DOWN;
+    telnet->aux.telnet.state = CONMAN_TELNET_DOWN;
     /*
      *  Dup 'enableKeepAlive' to prevent passing 'conf'
      *    to connect_telnet_obj().
@@ -127,7 +159,7 @@ int open_telnet_obj(obj_t *telnet)
     assert(telnet != NULL);
     assert(is_telnet_obj(telnet));
 
-    if (telnet->aux.telnet.conState == CONMAN_TELCON_UP) {
+    if (telnet->aux.telnet.state == CONMAN_TELNET_UP) {
         disconnect_telnet_obj(telnet);
     }
     else {
@@ -135,7 +167,7 @@ int open_telnet_obj(obj_t *telnet)
     }
     DPRINTF((9, "Opened [%s] telnet: fd=%d host=%s port=%d state=%d.\n",
         telnet->name, telnet->fd, telnet->aux.telnet.host,
-        telnet->aux.telnet.port, (int) telnet->aux.telnet.conState));
+        telnet->aux.telnet.port, (int) telnet->aux.telnet.state));
     return(rc);
 }
 
@@ -148,13 +180,13 @@ static int connect_telnet_obj(obj_t *telnet)
     struct sockaddr_in saddr;
     const int on = 1;
 
-    assert(telnet->aux.telnet.conState != CONMAN_TELCON_UP);
+    assert(telnet->aux.telnet.state != CONMAN_TELNET_UP);
 
     if (telnet->aux.telnet.timer >= 0) {
         (void) tpoll_timeout_cancel(tp_global, telnet->aux.telnet.timer);
         telnet->aux.telnet.timer = -1;
     }
-    if (telnet->aux.telnet.conState == CONMAN_TELCON_DOWN) {
+    if (telnet->aux.telnet.state == CONMAN_TELNET_DOWN) {
         /*
          *  Initiate a non-blocking connection attempt.
          */
@@ -191,7 +223,7 @@ static int connect_telnet_obj(obj_t *telnet)
         if (connect(telnet->fd,
                 (struct sockaddr *) &saddr, sizeof(saddr)) < 0) {
             if (errno == EINPROGRESS) {
-                telnet->aux.telnet.conState = CONMAN_TELCON_PENDING;
+                telnet->aux.telnet.state = CONMAN_TELNET_PENDING;
             }
             else {
                 disconnect_telnet_obj(telnet);
@@ -199,7 +231,7 @@ static int connect_telnet_obj(obj_t *telnet)
             return(-1);
         }
     }
-    else if (telnet->aux.telnet.conState == CONMAN_TELCON_PENDING) {
+    else if (telnet->aux.telnet.state == CONMAN_TELNET_PENDING) {
         /*
          *  Did the non-blocking connect complete successfully?
          *    (cf. Stevens UNPv1 15.3 p409)
@@ -231,10 +263,10 @@ static int connect_telnet_obj(obj_t *telnet)
     }
     else {
         log_err(0, "Console [%s] is in unexpected telnet state=%d",
-            telnet->aux.telnet.conState);
+            telnet->aux.telnet.state);
     }
     telnet->gotEOF = 0;
-    telnet->aux.telnet.conState = CONMAN_TELCON_UP;
+    telnet->aux.telnet.state = CONMAN_TELNET_UP;
 
     /*  Notify linked objs when transitioning into an UP state.
      */
@@ -281,12 +313,12 @@ static void disconnect_telnet_obj(obj_t *telnet)
     }
     /*  Notify linked objs when transitioning from an UP state.
      */
-    if (telnet->aux.telnet.conState == CONMAN_TELCON_UP) {
+    if (telnet->aux.telnet.state == CONMAN_TELNET_UP) {
         write_notify_msg(telnet, LOG_NOTICE,
             "Console [%s] disconnected from <%s:%d>",
             telnet->name, telnet->aux.telnet.host, telnet->aux.telnet.port);
     }
-    telnet->aux.telnet.conState = CONMAN_TELCON_DOWN;
+    telnet->aux.telnet.state = CONMAN_TELNET_DOWN;
     /*
      *  Set timer for establishing new connection using exponential backoff.
      */
@@ -336,7 +368,7 @@ int process_telnet_escapes(obj_t *telnet, void *src, int len)
 
     assert(is_telnet_obj(telnet));
     assert(telnet->fd >= 0);
-    assert(telnet->aux.telnet.conState == CONMAN_TELCON_UP);
+    assert(telnet->aux.telnet.state == CONMAN_TELNET_UP);
 
     if (!src || len <= 0)
         return(0);
@@ -424,7 +456,7 @@ int send_telnet_cmd(obj_t *telnet, int cmd, int opt)
 
     /*  This is a no-op if the telnet connection is not yet established.
      */
-    if ((telnet->fd < 0) || (telnet->aux.telnet.conState != CONMAN_TELCON_UP))
+    if ((telnet->fd < 0) || (telnet->aux.telnet.state != CONMAN_TELNET_UP))
         return(0);
 
     *p++ = IAC;
@@ -476,7 +508,7 @@ static int process_telnet_cmd(obj_t *telnet, int cmd, int opt)
 
     assert(is_telnet_obj(telnet));
     assert(telnet->fd >= 0);
-    assert(telnet->aux.telnet.conState == CONMAN_TELCON_UP);
+    assert(telnet->aux.telnet.state == CONMAN_TELNET_UP);
 
     if (!TELCMD_OK(cmd)) {
         log_msg(LOG_DEBUG,

@@ -1,4 +1,4 @@
-.\" $Id: conmand.8.in 917 2009-03-30 19:57:09Z dun $
+.\" $Id: conmand.8.in 1003 2011-01-26 18:26:06Z chris.m.dunlap $
 
 .TH CONMAND 8 "@DATE@" "@PROJECT@-@VERSION@" "ConMan: The Console Manager"
 
@@ -95,17 +95,17 @@ its "nofile" soft limit to the maximum/hard limit.  If you are encountering
 Chris Dunlap <cdunlap@llnl.gov>
 
 .SH COPYRIGHT
-Copyright (C) 2007-2009 Lawrence Livermore National Security, LLC.
+Copyright (C) 2007-2011 Lawrence Livermore National Security, LLC.
 .br
 Copyright (C) 2001-2007 The Regents of the University of California.
 
-ConMan is free software; you can redistribute it and/or modify it under the
-terms of the GNU General Public License as published by the Free Software
-Foundation; either version 2 of the License, or (at your option) any later
-version.
+ConMan is free software: you can redistribute it and/or modify it under
+the terms of the GNU General Public License as published by the Free
+Software Foundation, either version 3 of the License, or (at your option)
+any later version.
 
 .SH "SEE ALSO"
 .BR conman (1),
 .BR conman.conf (5).
 .PP
-\fBhttp://home.gna.org/conman/\fR
+\fBhttp://conman.googlecode.com/\fR

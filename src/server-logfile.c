@@ -1,31 +1,31 @@
 /*****************************************************************************
- *  $Id: server-logfile.c 902 2009-02-13 06:11:56Z dun $
+ *  $Id: server-logfile.c 1033 2011-04-06 21:53:48Z chris.m.dunlap $
  *****************************************************************************
  *  Written by Chris Dunlap <cdunlap@llnl.gov>.
- *  Copyright (C) 2007-2009 Lawrence Livermore National Security, LLC.
+ *  Copyright (C) 2007-2011 Lawrence Livermore National Security, LLC.
  *  Copyright (C) 2001-2007 The Regents of the University of California.
  *  UCRL-CODE-2002-009.
  *
  *  This file is part of ConMan: The Console Manager.
- *  For details, see <http://home.gna.org/conman/>.
+ *  For details, see <http://conman.googlecode.com/>.
  *
- *  This is free software; you can redistribute it and/or modify it
- *  under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; either version 2 of the License, or
- *  (at your option) any later version.
+ *  ConMan is free software: you can redistribute it and/or modify it under
+ *  the terms of the GNU General Public License as published by the Free
+ *  Software Foundation, either version 3 of the License, or (at your option)
+ *  any later version.
  *
- *  This is distributed in the hope that it will be useful, but WITHOUT
+ *  ConMan is distributed in the hope that it will be useful, but WITHOUT
  *  ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
  *  FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
  *  for more details.
  *
- *  You should have received a copy of the GNU General Public License
- *  along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *  You should have received a copy of the GNU General Public License along
+ *  with ConMan.  If not, see <http://www.gnu.org/licenses/>.
  *****************************************************************************/
 
 
-#ifdef HAVE_CONFIG_H
-#  include "config.h"
+#if HAVE_CONFIG_H
+#  include <config.h>
 #endif /* HAVE_CONFIG_H */
 
 #include <assert.h>
@@ -80,7 +80,11 @@ int parse_logfile_opts(logopt_t *opts, const char *str,
      */
     tok = strtok(buf, separators);
     while (tok != NULL) {
-        if (!strcasecmp(tok, "sanitize"))
+        if (!strcasecmp(tok, "lock"))
+            optsTmp.enableLock = 1;
+        else if (!strcasecmp(tok, "nolock"))
+            optsTmp.enableLock = 0;
+	else if (!strcasecmp(tok, "sanitize"))
             optsTmp.enableSanitize = 1;
         else if (!strcasecmp(tok, "nosanitize"))
             optsTmp.enableSanitize = 0;
@@ -181,7 +185,7 @@ obj_t * create_logfile_obj(server_conf_t *conf, char *name,
     else if (is_unixsock_obj(console)) {
         console->aux.unixsock.logfile = logfile;
     }
-#ifdef WITH_FREEIPMI
+#if WITH_FREEIPMI
     else if (is_ipmi_obj(console)) {
         console->aux.ipmi.logfile = logfile;
     }
@@ -269,7 +273,8 @@ int open_logfile_obj(obj_t *logfile)
             logfile->name, strerror(errno));
         return(-1);
     }
-    if (get_write_lock(logfile->fd) < 0) {
+    if (logfile->aux.logfile.opts.enableLock
+            && (get_write_lock(logfile->fd) < 0)) {
         log_msg(LOG_WARNING, "Unable to lock \"%s\"", logfile->name);
         close(logfile->fd);             /* ignore err on close() */
         logfile->fd = -1;
@@ -321,7 +326,7 @@ obj_t * get_console_logfile_obj(obj_t *console)
     else if (is_unixsock_obj(console)) {
         logfile = console->aux.unixsock.logfile;
     }
-#ifdef WITH_FREEIPMI
+#if WITH_FREEIPMI
     else if (is_ipmi_obj(console)) {
         logfile = console->aux.ipmi.logfile;
     }

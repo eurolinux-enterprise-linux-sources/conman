@@ -1,34 +1,34 @@
-# $Id: conman.spec 939 2009-04-14 22:12:01Z dun $
+# $Id: conman.spec 1063 2011-04-21 23:40:05Z chris.m.dunlap $
 
 Name:		conman
-Version:	0.2.5
+Version:	0.2.7
 Release:	1%{?dist}
 
 Summary:	ConMan: The Console Manager
 Group:		Applications/System
-License:	GPLv2+
-URL:		http://home.gna.org/conman/
+License:	GPLv3+
+URL:		http://conman.googlecode.com/
 
 Requires:	expect
 BuildRoot:	%{_tmppath}/%{name}-%{version}-%{release}-root-%(%{__id_u} -n)
 
 %if 0%{?chaos} >= 4 || 0%{?rhel} >= 6 || 0%{?fedora} >= 9
-BuildRequires:  freeipmi-devel
+BuildRequires:	freeipmi-devel >= 1.0.4
 %endif
 
 %if 0%{?rhel} >= 6 || 0%{?fedora} >= 7
-BuildRequires:  tcp_wrappers-devel
+BuildRequires:	tcp_wrappers-devel
 %else
 %if 0%{?rhel} < 6 || 0%{?fedora} < 7 || 0%{?rhl}
-BuildRequires:  tcp_wrappers
+BuildRequires:	tcp_wrappers
 %else
 %if "%{_vendor}" == "suse"
-BuildRequires:  tcpd-devel
+BuildRequires:	tcpd-devel
 %endif
 %endif
 %endif
 
-Source0:	conman-0.2.5.tar.bz2
+Source0:	%{name}-%{version}.tar.bz2
 
 %description
 ConMan is a serial console management program designed to support a large
@@ -46,7 +46,7 @@ Its features include:
   - broadcasting client output to multiple consoles
 
 %prep
-%setup -n conman-0.2.5
+%setup
 
 %build
 %configure

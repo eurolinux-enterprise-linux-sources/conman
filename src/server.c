@@ -1,31 +1,31 @@
 /*****************************************************************************
- *  $Id: server.c 970 2009-05-19 19:29:58Z dun $
+ *  $Id: server.c 1061 2011-04-21 23:13:41Z chris.m.dunlap $
  *****************************************************************************
  *  Written by Chris Dunlap <cdunlap@llnl.gov>.
- *  Copyright (C) 2007-2009 Lawrence Livermore National Security, LLC.
+ *  Copyright (C) 2007-2011 Lawrence Livermore National Security, LLC.
  *  Copyright (C) 2001-2007 The Regents of the University of California.
  *  UCRL-CODE-2002-009.
  *
  *  This file is part of ConMan: The Console Manager.
- *  For details, see <http://home.gna.org/conman/>.
+ *  For details, see <http://conman.googlecode.com/>.
  *
- *  This is free software; you can redistribute it and/or modify it
- *  under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; either version 2 of the License, or
- *  (at your option) any later version.
+ *  ConMan is free software: you can redistribute it and/or modify it under
+ *  the terms of the GNU General Public License as published by the Free
+ *  Software Foundation, either version 3 of the License, or (at your option)
+ *  any later version.
  *
- *  This is distributed in the hope that it will be useful, but WITHOUT
+ *  ConMan is distributed in the hope that it will be useful, but WITHOUT
  *  ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
  *  FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
  *  for more details.
  *
- *  You should have received a copy of the GNU General Public License
- *  along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *  You should have received a copy of the GNU General Public License along
+ *  with ConMan.  If not, see <http://www.gnu.org/licenses/>.
  *****************************************************************************/
 
 
-#ifdef HAVE_CONFIG_H
-#  include "config.h"
+#if HAVE_CONFIG_H
+#  include <config.h>
 #endif /* HAVE_CONFIG_H */
 
 #include <assert.h>
@@ -96,7 +96,7 @@ int main(int argc, char *argv[])
     int fd = -1;
     pid_t pgid = -1;
     server_conf_t *conf;
-    int log_priority = LOG_NOTICE;
+    int log_priority = LOG_INFO;
 
 #ifndef NDEBUG
     log_priority = LOG_DEBUG;
@@ -145,14 +145,14 @@ int main(int argc, char *argv[])
     log_msg(LOG_NOTICE, "Starting ConMan daemon %s (pid %d)",
         VERSION, (int) getpid());
 
-#ifdef WITH_FREEIPMI
+#if WITH_FREEIPMI
     ipmi_init(conf->numIpmiObjs);
 #endif /* WITH_FREEIPMI */
 
     open_objs(conf);
     mux_io(conf);
 
-#ifdef WITH_FREEIPMI
+#if WITH_FREEIPMI
     ipmi_fini();
 #endif /* WITH_FREEIPMI */
 
@@ -735,6 +735,7 @@ static void mux_io(server_conf_t *conf)
          *    tpoll() sleep timeout and greatly reduce cpu utilization.
          *    It will also eliminate the maze of twisty conditions below.
          */
+        DPRINTF((25, "Recomputing tpoll fd set\n"));
         (void) tpoll_zero(conf->tp, TPOLL_ZERO_FDS);
         tpoll_set(conf->tp, conf->ld, POLLIN);
 
@@ -753,15 +754,16 @@ static void mux_io(server_conf_t *conf)
             }
             if ( (
                    ( is_telnet_obj(obj) &&
-                     obj->aux.telnet.conState == CONMAN_TELCON_UP ) ||
-#ifdef WITH_FREEIPMI
+                     obj->aux.telnet.state == CONMAN_TELNET_UP ) ||
+                   ( is_process_obj(obj) &&
+                     obj->aux.process.state == CONMAN_PROCESS_UP ) ||
+#if WITH_FREEIPMI
                    ( is_ipmi_obj(obj) &&
                      obj->aux.ipmi.state == CONMAN_IPMI_UP ) ||
 #endif /* WITH_FREEIPMI */
                    ( is_unixsock_obj(obj) &&
                      obj->aux.unixsock.state == CONMAN_UNIXSOCK_UP ) ||
                    is_serial_obj(obj)  ||
-                   is_process_obj(obj) ||
                    is_client_obj(obj)
                  )
                  &&
@@ -772,8 +774,10 @@ static void mux_io(server_conf_t *conf)
             if ( ( (obj->bufInPtr != obj->bufOutPtr) ||
                    (obj->gotEOF) ) &&
                  ( ! (is_telnet_obj(obj) &&
-                      obj->aux.telnet.conState != CONMAN_TELCON_UP) ) &&
-#ifdef WITH_FREEIPMI
+                      obj->aux.telnet.state != CONMAN_TELNET_UP) ) &&
+                 ( ! (is_process_obj(obj) &&
+                      obj->aux.process.state != CONMAN_PROCESS_UP) ) &&
+#if WITH_FREEIPMI
                  ( ! (is_ipmi_obj(obj) &&
                       obj->aux.ipmi.state != CONMAN_IPMI_UP) ) &&
 #endif /* WITH_FREEIPMI */
@@ -785,11 +789,12 @@ static void mux_io(server_conf_t *conf)
                 tpoll_set(conf->tp, obj->fd, POLLOUT);
             }
             if (is_telnet_obj(obj) &&
-                obj->aux.telnet.conState == CONMAN_TELCON_PENDING)
+                obj->aux.telnet.state == CONMAN_TELNET_PENDING)
             {
                 tpoll_set(conf->tp, obj->fd, POLLIN | POLLOUT);
             }
         }
+        DPRINTF((25, "Calling tpoll\n"));
         while ((n = tpoll(conf->tp, 1000)) < 0) {
             if (errno != EINTR) {
                 log_err(errno, "Unable to multiplex I/O");
@@ -820,7 +825,7 @@ static void mux_io(server_conf_t *conf)
             }
             if (is_telnet_obj(obj)
               && tpoll_is_set(conf->tp, obj->fd, POLLIN | POLLOUT)
-              && (obj->aux.telnet.conState == CONMAN_TELCON_PENDING)) {
+              && (obj->aux.telnet.state == CONMAN_TELNET_PENDING)) {
                 open_telnet_obj(obj);
                 continue;
             }
@@ -1071,7 +1076,7 @@ static void reset_console(obj_t *console, const char *cmd)
         close(STDIN_FILENO);            /* ignore errors on close() */
         close(STDOUT_FILENO);
         close(STDERR_FILENO);
-        execl("/bin/sh", "sh", "-c", buf, NULL);
+        execl("/bin/sh", "sh", "-c", buf, (char *) NULL);
         _exit(127);                     /* execl() error */
     }
     /*  Both parent and child call setpgid() to make the child a process

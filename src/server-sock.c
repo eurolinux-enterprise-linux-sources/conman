@@ -1,33 +1,35 @@
 /*****************************************************************************
- *  $Id: server-sock.c 902 2009-02-13 06:11:56Z dun $
+ *  $Id: server-sock.c 1033 2011-04-06 21:53:48Z chris.m.dunlap $
  *****************************************************************************
  *  Written by Chris Dunlap <cdunlap@llnl.gov>.
- *  Copyright (C) 2007-2009 Lawrence Livermore National Security, LLC.
+ *  Copyright (C) 2007-2011 Lawrence Livermore National Security, LLC.
  *  Copyright (C) 2001-2007 The Regents of the University of California.
  *  UCRL-CODE-2002-009.
  *
  *  This file is part of ConMan: The Console Manager.
- *  For details, see <http://home.gna.org/conman/>.
+ *  For details, see <http://conman.googlecode.com/>.
  *
- *  This is free software; you can redistribute it and/or modify it
- *  under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; either version 2 of the License, or
- *  (at your option) any later version.
+ *  ConMan is free software: you can redistribute it and/or modify it under
+ *  the terms of the GNU General Public License as published by the Free
+ *  Software Foundation, either version 3 of the License, or (at your option)
+ *  any later version.
  *
- *  This is distributed in the hope that it will be useful, but WITHOUT
+ *  ConMan is distributed in the hope that it will be useful, but WITHOUT
  *  ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
  *  FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
  *  for more details.
  *
- *  You should have received a copy of the GNU General Public License
- *  along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *  You should have received a copy of the GNU General Public License along
+ *  with ConMan.  If not, see <http://www.gnu.org/licenses/>.
  *****************************************************************************/
 
 
-#ifdef HAVE_CONFIG_H
-#  include "config.h"
+#if HAVE_CONFIG_H
+#  include <config.h>
 #endif /* HAVE_CONFIG_H */
 
+#include <sys/types.h>                  /* include before in.h for bsd */
+#include <netinet/in.h>                 /* include before inet.h for bsd */
 #include <arpa/inet.h>
 #include <assert.h>
 #include <errno.h>
@@ -50,7 +52,7 @@
 #include "wrapper.h"
 
 
-#ifdef WITH_TCP_WRAPPERS
+#if WITH_TCP_WRAPPERS
 /*
  *  TCP-Wrappers support.
  */
@@ -195,7 +197,7 @@ static int resolve_addr(server_conf_t *conf, req_t *req, int sd)
         req->host = create_string(buf);
     }
 
-#ifdef WITH_TCP_WRAPPERS
+#if WITH_TCP_WRAPPERS
     /*
      *  Check via TCP-Wrappers.
      */
@@ -907,7 +909,7 @@ static void check_console_state(obj_t *console, obj_t *client)
         open_serial_obj(console);
     }
     else if (is_telnet_obj(console)
-            && (console->aux.telnet.conState != CONMAN_TELCON_UP)) {
+            && (console->aux.telnet.state != CONMAN_TELNET_UP)) {
         snprintf(buf, sizeof(buf),
             "%sConsole [%s] is currently disconnected from <%s:%d>%s",
             CONMAN_MSG_PREFIX, console->name, console->aux.telnet.host,
@@ -920,7 +922,7 @@ static void check_console_state(obj_t *console, obj_t *client)
          *    it would be misinterpreted as the completion of the non-blocking
          *    connect().
          */
-        if (console->aux.telnet.conState == CONMAN_TELCON_DOWN) {
+        if (console->aux.telnet.state == CONMAN_TELNET_DOWN) {
             open_telnet_obj(console);
         }
     }
@@ -934,7 +936,7 @@ static void check_console_state(obj_t *console, obj_t *client)
         write_obj_data(client, buf, strlen(buf), 1);
         open_unixsock_obj(console);
     }
-#ifdef WITH_FREEIPMI
+#if WITH_FREEIPMI
     else if (is_ipmi_obj(console)
             && (console->aux.ipmi.state != CONMAN_IPMI_UP)) {
         snprintf(buf, sizeof(buf),

@@ -1,4 +1,193 @@
+2011-04-21  Chris Dunlap  <cdunlap@llnl.gov>
+
+	* : Released 0.2.7.
+
+	* META, NEWS, conman.spec: Updated metadata for 0.2.7 release.
+
+	* server-ipmi.c (parse_ipmi_opts): Fixed snprintf() format warning.
+
+	* server.c (reset_console): Added cast to execl() NULL ptr arg to
+	  resolve "missing sentinel in function call" warning on OpenBSD-4.7.
+
+2011-04-20  Chris Dunlap  <cdunlap@llnl.gov>
+
+	* : Added support for new IPMIOPTS syntax.  (Fixes issue 5)
+	* server-ipmi.c (parse_ipmi_opts): Rewrote for new ipmiopts syntax.
+	* server-ipmi.c (init_ipmi_opts, parse_ipmi_opts_v1, process_ipmi_opt,
+	  is_ipmi_opt_tag, process_ipmi_opt_username,
+	  process_ipmi_opt_password, process_ipmi_opt_k_g,
+	  process_ipmi_opt_privilege, process_ipmi_opt_cipher,
+	  process_ipmi_opt_workaround): Added.
+	* server-ipmi.c (create_ipmi_obj): Added DPRINTF to dump ipmiopts.
+	* server-ipmi.c (create_ipmi_ctx): Updated to use new ipmiopts.
+	* server-conf.c (create_server_conf):
+	  Replaced memset() of globalIpmiOpts with init_ipmi_opts().
+	* server.h: Added privilegeLevel, cipherSuite, and workaroundFlags to
+	  struct ipmi_opt.
+	* etc/conman.conf, man/conman.conf.5.in: Documented new ipmiopts.
+	* configure.ac: Updated tests to require freeipmi-1.0.4 or later.
+	* conman.spec: Updated BuildRequires for freeipmi-devel.
+
+2011-04-07  Chris Dunlap  <cdunlap@llnl.gov>
+
+	* server.h, server-conf.c, server-ipmi.c, server-process.c,
+	  server-serial.c, server-telnet.c, server-unixsock.c:
+	  Moved is_ipmi_dev(), is_process_dev(), is_serial_dev(),
+	  is_telnet_dev(), and is_unixsock_dev() out of server-conf.c.
+
+2011-04-06  Chris Dunlap  <cdunlap@llnl.gov>
+
+	* configure.ac: Fixed "--enable-debug" building when CFLAGS are set.
+	  Added DEBUG_CFLAGS substitution.
+	* Makefile.in: Added DEBUG_CFLAGS to COMPILE_OPTS.
+
+	* tpoll.h: Removed comma at end of tpoll_zero_t enumerator list
+	  in order to build with -pedantic.
+
+	* : Cleaned up preprocessor conditionals.
+
+2011-04-05  Chris Dunlap  <cdunlap@llnl.gov>
+
+	* configure.ac: Combined adjacent AC_CHECK_HEADERS.
+
+	* configure.ac: Made "--with-freeipmi" fatal if FreeIPMI not found.
+
+	* configure.ac: Replaced AC_HELP_STRING with AS_HELP_STRING.
+
+2011-04-04  Chris Dunlap  <cdunlap@llnl.gov>
+
+	* configure.ac: Fixed spurious quote in AC_CHECK_DECL.
+
+	* conman.spec: Added freeipmi-devel version to BuildRequires tag.
+
+	* server.c (main): Changed default log priority to LOG_INFO.
+
+	* : Fixed race conditions & segfaults when using libipmiconsole.
+	  Added mutex to protect against concurrent access to the ipmi_obj
+	  since connect_ipmi_obj() can be invoked from either the main
+	  thread or the ipmiconsole engine thread.  (Fixes issue 7)
+	* configure.ac: Changed ipmiconsole autoconf tests to indirectly check
+	  for FreeIPMI 1.0.3+ which fixes ipmiconsole_engine_submit() behavior.
+	* server.h: Added mutex to struct ipmi_obj.
+	* server-obj.c (destroy_obj): Added call to destroy ipmi mutex.
+	* server-ipmi.c (create_ipmi_obj, open_ipmi_obj, disconnect_ipmi_obj,
+	  connect_ipmi_obj, reset_ipmi_delay, send_ipmi_break): Added support
+	  for ipmi mutex to protect the ctx, state, timer, and delay vars.
+	* server-ipmi.c (disconnect_ipmi_obj, fail_ipmi_connect):
+	  Removed calls to ipmiconsole_ctx_destroy().  An existing ctx
+	  is now destroyed immediately before a new one is created
+	  in create_ipmi_ctx().  According to Al Chu (FreeIPMI),
+	  ipmiconsole_ctx_destroy() should be safe to call in these places.
+	  This change is more of a precautionary measure.  With the ctx now
+	  being destroyed in create_ipmi_ctx(), these other calls should
+	  be redundant.
+	* server-ipmi.c (create_ipmi_ctx): Destroy an existing ipmi.ctx
+	  immediately before creating a new one.
+
+2011-01-31  Chris Dunlap  <cdunlap@llnl.gov>
+
+	* THANKS: Updated.
+
+2011-01-26  Chris Dunlap  <cdunlap@llnl.gov>
+
+	* configure: Autoreconf'd with autoconf-2.67.
+
+	* : Applied patch from <marc.girard@bull.net> to add console logfile
+	  lock/nolock option to toggle write lock.  (Fixes issue 6)
+	* server.h: Added enableLock to struct logfile_opt.
+	* server-conf.c (create_server_conf): Initialized enableLock.
+	* server-logfile.c (parse_logfile_opts, open_logfile_obj):
+	  Set/Test enableLock for console logfile write lock.
+	* etc/conman.conf, man/conman.conf.5.in: Documented lock/nolock opt.
+	* THANKS: Updated.
+
+	* : Updated copyright date range.
+
+2010-06-15  Chris Dunlap  <cdunlap@llnl.gov>
+
+	* : Released 0.2.6.
+
+	* META, NEWS, conman.spec: Updated metadata for 0.2.6 release.
+
+	* server.h: Removed WITH_FREEIPMI #ifdef guard for CONMAN_OBJ_IPMI.
+	  Replaced conditional def for is_ipmi_obj() with constant def.
+	  Re-ordered is_console_obj().
+
+	* : Ported to FreeBSD 4.7-RELEASE-p28 (i386).
+	* configure.ac: Fixed AC check for socklen_t.
+	* configure.ac: Added AC check for how to link against Pthreads.
+	* Makefile.in: Replaced "-lpthread" with $LIBPTHREAD.
+	* configure, config.h.in: Rebuilt.
+	* client-sock.c, server.h, server-sock.c, server-telnet.c,
+	  server-unixsock.c, util-net.c: Twiddled header includes for BSD.
+	* server-obj.c (create_obj): Replaced assert for checking "type" arg
+	  with runtime check against CONMAN_OBJ_LAST_ENTRY due to
+	  "preprocessing directive not recognized within macro arg" warning.
+
+2010-06-08  Chris Dunlap  <cdunlap@llnl.gov>
+
+	* : Changed license from GPLv2+ to GPLv3+.
+
+	* : Changed external process reconnect behavior from
+	  linear-backoff with a max-count leading to a disabled state,
+	  to an exponential-backoff with no max-count.  (Fixes issue 3)
+	* server.h: Added process_obj delay and state, and removed count.
+	  Added PROCESS_MAX_TIMEOUT.  Removed PROCESS_MAX_COUNT.
+	* server.c (mux_io):
+	  Added checks for process obj state when recomputing poll set.
+	* server-obj.c (write_obj_data, write_to_obj):
+	  Added checks for process obj state.
+	* server-process.c: Revamped.  Refactored open_process_obj()
+	  into disconnect_process_obj() and connect_process_obj().
+	  Added check_process_prog() and reset_process_delay().
+
+	* auxdir/config.guess, auxdir/config.sub:
+	  Updated to autotools-dev-20100122.1 (Debian Squeeze).
+	* auxdir/install-sh, auxdir/mkinstalldirs:
+	  Updated to automake-1.11 (Debian Squeeze).
+
+2010-06-07  Chris Dunlap  <cdunlap@llnl.gov>
+
+	* server-obj.c: Added DPRINTFs to show start of various routines.
+
+2010-06-03  Chris Dunlap  <cdunlap@llnl.gov>
+
+	* server.h, server.c, server-obj.c, server-sock.c, server-telnet.c:
+	  Renamed telnet_obj conState to state.  Renamed telnet_connect_state
+	  enums from CONMAN_TELCON_* to CONMAN_TELNET_*.
+
+2010-06-02  Chris Dunlap  <cdunlap@llnl.gov>
+
+	* configure, config.h.in: Autoreconf'd with autoconf-2.65.
+
+	* THANKS: Updated.
+
+	* server-ipmi.c (complete_ipmi_connect): Tweaked ordering so IPMI state
+	  is reset before a timer is added.  This should have no effect other
+	  than to better mirror the other console backends.
+
+	* server-ipmi.c (complete_ipmi_connect):
+	  Applied patch from <matthieu.perotin@bull.net> to reset gotEOF flag
+	  upon successful ipmiconsole connection.  (Fixes issue 2)
+
+	* server-ipmi.c (fail_ipmi_connect):
+	  Applied patch from <matthieu.perotin@bull.net> to cleanup ipmiconsole
+	  ctx on failed connection attempt.  (Fixes issue 1)
+
+2010-05-20  Chris Dunlap  <cdunlap@llnl.gov>
+
+	* README: Added license info and homepage URL.
+
+	* etc/conman.conf, man/conman.conf.5.in: Tweaked formatting in
+	  Console Directives section.
+
+2010-05-17  Chris Dunlap  <cdunlap@llnl.gov>
+
+	* : Updated homepage URL and copyleft boilerplate.
+
 2009-05-19  Chris Dunlap  <cdunlap@llnl.gov>
+
+	* : Released 0.2.5.
 
 	* META, NEWS: Updated for 0.2.5 release.
 

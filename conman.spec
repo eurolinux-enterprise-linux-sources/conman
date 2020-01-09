@@ -1,15 +1,16 @@
 Name:               conman
-Version:            0.2.5
-Release:            2.4%{?dist}
-Summary:            The Console Manager
+Version:            0.2.7
+Release:            2%{?dist}
+Summary:            ConMan - The Console Manager
 
 Group:              Applications/System
-License:            GPLv2+
+License:            GPLv3+
 URL:                http://home.gna.org/conman/
 Source0:            http://download.gna.org/%{name}/%{version}/%{name}-%{version}.tar.bz2
 Source1:            %{name}.init
 Source2:            %{name}.logrotate
 Patch1:             conman-0.2.5-openfiles.patch
+Patch2:             conman-0.2.5-strftime.patch
 BuildRoot:          %{_tmppath}/%{name}-%{version}-%{release}-root-%(%{__id_u} -n)
 
 Requires:           logrotate
@@ -18,6 +19,7 @@ Requires(preun):    /sbin/chkconfig
 Requires(preun):    /sbin/service
 Requires(postun):   /sbin/service
 BuildRequires:      tcp_wrappers
+BuildRequires:      freeipmi-devel
 
 %description
 ConMan is a serial console management program designed to support a large
@@ -35,6 +37,7 @@ Its features include:
 %prep
 %setup -q
 %patch1 -b .openfiles -p1
+%patch2 -b .strftime -p1
 
 %build
 # not really lib material, more like share
@@ -105,6 +108,21 @@ fi
 %{_mandir}/*/*
 
 %changelog
+* Mon Oct  7 2013 Denys Vlasenko <dvlasenk@redhat.com> - 0.2.7-2
+- Enable IPMI feature.
+- Resolves: rhbz#951698.
+
+* Thu Aug  8 2013 Denys Vlasenko <dvlasenk@redhat.com> - 0.2.7-1
+- New upstream release.
+- Resolves: rhbz#951698.
+
+* Thu Aug  8 2013 Denys Vlasenko <dvlasenk@redhat.com> - 0.2.5-2.5
+- Forward-porting fixes from RHEL6.
+- Enlarge buffer used for formatting date in a string format.
+- Resolves: rhbz#891938.
+- Allow configuration of the maximum number of open files.
+- Resolves: rhbz#738967.
+
 * Wed Dec 14 2011 Denys Vlasenko <dvlasenk@redhat.com> - 0.2.5-2.4
 - Allow configuration of the maximum number of open files.
 - Resolves: rhbz#738967.

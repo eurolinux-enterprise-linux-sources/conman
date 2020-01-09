@@ -1,39 +1,40 @@
 /*****************************************************************************
- *  $Id: server-obj.c 952 2009-05-13 01:05:07Z dun $
+ *  $Id: server-obj.c 1033 2011-04-06 21:53:48Z chris.m.dunlap $
  *****************************************************************************
  *  Written by Chris Dunlap <cdunlap@llnl.gov>.
- *  Copyright (C) 2007-2009 Lawrence Livermore National Security, LLC.
+ *  Copyright (C) 2007-2011 Lawrence Livermore National Security, LLC.
  *  Copyright (C) 2001-2007 The Regents of the University of California.
  *  UCRL-CODE-2002-009.
  *
  *  This file is part of ConMan: The Console Manager.
- *  For details, see <http://home.gna.org/conman/>.
+ *  For details, see <http://conman.googlecode.com/>.
  *
- *  This is free software; you can redistribute it and/or modify it
- *  under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; either version 2 of the License, or
- *  (at your option) any later version.
+ *  ConMan is free software: you can redistribute it and/or modify it under
+ *  the terms of the GNU General Public License as published by the Free
+ *  Software Foundation, either version 3 of the License, or (at your option)
+ *  any later version.
  *
- *  This is distributed in the hope that it will be useful, but WITHOUT
+ *  ConMan is distributed in the hope that it will be useful, but WITHOUT
  *  ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
  *  FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
  *  for more details.
  *
- *  You should have received a copy of the GNU General Public License
- *  along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *  You should have received a copy of the GNU General Public License along
+ *  with ConMan.  If not, see <http://www.gnu.org/licenses/>.
  *****************************************************************************/
 
 
-#ifdef HAVE_CONFIG_H
-#  include "config.h"
+#if HAVE_CONFIG_H
+#  include <config.h>
 #endif /* HAVE_CONFIG_H */
+
+#if HAVE_IPMICONSOLE_H
+#  include <ipmiconsole.h>
+#endif /* HAVE_IPMICONSOLE_H */
 
 #include <assert.h>
 #include <ctype.h>
 #include <errno.h>
-#ifdef WITH_FREEIPMI
-#include <ipmiconsole.h>
-#endif /* WITH_FREEIPMI */
 #include <stdio.h>
 #include <stdarg.h>
 #include <stdlib.h>
@@ -67,16 +68,6 @@ obj_t * create_obj(
 
     assert(conf != NULL);
     assert(name != NULL);
-    assert(type==CONMAN_OBJ_CLIENT  ||
-#ifdef WITH_FREEIPMI
-           type==CONMAN_OBJ_IPMI    ||
-#endif /* WITH_FREEIPMI */
-           type==CONMAN_OBJ_LOGFILE ||
-           type==CONMAN_OBJ_PROCESS ||
-           type==CONMAN_OBJ_SERIAL  ||
-           type==CONMAN_OBJ_TELNET  ||
-           type==CONMAN_OBJ_UNIXSOCK
-    );
 
     if (!(obj = malloc(sizeof(obj_t))))
         out_of_memory();
@@ -86,6 +77,9 @@ obj_t * create_obj(
     x_pthread_mutex_init(&obj->bufLock, NULL);
     obj->readers = list_create(NULL);
     obj->writers = list_create(NULL);
+    if ((type < 0) || (type >= CONMAN_OBJ_LAST_ENTRY)) {
+        log_err(0, "INTERNAL: Unrecognized object [%s] type=%d", name, type);
+    }
     obj->type = type;
     obj->gotBufWrap = 0;
     obj->gotEOF = 0;
@@ -213,7 +207,7 @@ void destroy_obj(obj_t *obj)
         /*  Do not destroy obj->aux.unixsock.logfile since it is only a ref.
          */
         break;
-#ifdef WITH_FREEIPMI
+#if WITH_FREEIPMI
     case CONMAN_OBJ_IPMI:
         if (obj->aux.ipmi.host) {
             free(obj->aux.ipmi.host);
@@ -221,6 +215,7 @@ void destroy_obj(obj_t *obj)
         if (obj->aux.ipmi.ctx) {
             ipmiconsole_ctx_destroy(obj->aux.ipmi.ctx);
         }
+        x_pthread_mutex_destroy(&obj->aux.ipmi.mutex);
         break;
 #endif /* WITH_FREEIPMI */
     default:
@@ -268,7 +263,7 @@ void reopen_obj(obj_t *obj)
     else if (is_unixsock_obj(obj)) {
         open_unixsock_obj(obj);
     }
-#ifdef WITH_FREEIPMI
+#if WITH_FREEIPMI
     else if (is_ipmi_obj(obj)) {
         open_ipmi_obj(obj);
     }
@@ -768,6 +763,8 @@ int shutdown_obj(obj_t *obj)
  */
     assert(obj != NULL);
 
+    DPRINTF((20, "Entered shutdown_obj: [%s]\n", obj->name));
+
     /*  An inactive obj should not be destroyed.
      */
     if (obj->fd < 0) {
@@ -842,6 +839,8 @@ int read_from_obj(obj_t *obj, tpoll_t tp)
     ListIterator i;
     obj_t *reader;
 
+    DPRINTF((20, "Entered read_from_obj: [%s]\n", obj->name));
+
     assert(obj->fd >= 0);
 
     if (obj->gotEOF) {
@@ -861,7 +860,7 @@ int read_from_obj(obj_t *obj, tpoll_t tp)
      *  The state of unixsock objs does not need to be checked here since it
      *    must be UP.
      */
-    if (is_telnet_obj(obj) && obj->aux.telnet.conState != CONMAN_TELCON_UP) {
+    if (is_telnet_obj(obj) && obj->aux.telnet.state != CONMAN_TELNET_UP) {
         return(0);
     }
 again:
@@ -938,6 +937,8 @@ int write_obj_data(obj_t *obj, const void *src, int len, int isInfo)
     int avail;
     int n, m;
 
+    DPRINTF((20, "Entered write_obj_data: [%s]\n", obj->name));
+
     if (!src || len <= 0) {
         return(0);
     }
@@ -952,9 +953,11 @@ int write_obj_data(obj_t *obj, const void *src, int len, int isInfo)
      *    data will be discarded so perform a no-op here.
      */
     if ( ( is_telnet_obj(obj) &&
-           obj->aux.telnet.conState != CONMAN_TELCON_UP ) || 
+           obj->aux.telnet.state != CONMAN_TELNET_UP ) ||
          ( is_unixsock_obj(obj) &&
            obj->aux.unixsock.state != CONMAN_UNIXSOCK_UP ) ||
+         ( is_process_obj(obj) &&
+           obj->aux.process.state != CONMAN_PROCESS_UP ) ||
          ( is_console_obj(obj) && (obj->fd < 0) ) )
     {
         DPRINTF((1, "Attempted to write to disconnected [%s].\n", obj->name));
@@ -1062,6 +1065,8 @@ int write_to_obj(obj_t *obj)
     int n;
     int isDead = 0;
 
+    DPRINTF((20, "Entered write_to_obj: [%s]\n", obj->name));
+
     assert(obj->fd >= 0);
 
     x_pthread_mutex_lock(&obj->bufLock);
@@ -1085,9 +1090,11 @@ int write_to_obj(obj_t *obj)
         avail = 0;
     }
     else if ( ( is_telnet_obj(obj) &&
-                obj->aux.telnet.conState != CONMAN_TELCON_UP ) || 
+                obj->aux.telnet.state != CONMAN_TELNET_UP ) ||
               ( is_unixsock_obj(obj) &&
-                obj->aux.unixsock.state != CONMAN_UNIXSOCK_UP ) )
+                obj->aux.unixsock.state != CONMAN_UNIXSOCK_UP ) ||
+              ( is_process_obj(obj) &&
+                obj->aux.process.state != CONMAN_PROCESS_UP ) )
     {
         avail = 0;
         obj->bufInPtr = obj->bufOutPtr = obj->buf;

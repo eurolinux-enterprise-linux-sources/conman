@@ -1,40 +1,41 @@
 /*****************************************************************************
- *  $Id: util-net.c 902 2009-02-13 06:11:56Z dun $
+ *  $Id: util-net.c 1033 2011-04-06 21:53:48Z chris.m.dunlap $
  *****************************************************************************
  *  Written by Chris Dunlap <cdunlap@llnl.gov>.
- *  Copyright (C) 2007-2009 Lawrence Livermore National Security, LLC.
+ *  Copyright (C) 2007-2011 Lawrence Livermore National Security, LLC.
  *  Copyright (C) 2001-2007 The Regents of the University of California.
  *  UCRL-CODE-2002-009.
  *
  *  This file is part of ConMan: The Console Manager.
- *  For details, see <http://home.gna.org/conman/>.
+ *  For details, see <http://conman.googlecode.com/>.
  *
- *  This is free software; you can redistribute it and/or modify it
- *  under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; either version 2 of the License, or
- *  (at your option) any later version.
+ *  ConMan is free software: you can redistribute it and/or modify it under
+ *  the terms of the GNU General Public License as published by the Free
+ *  Software Foundation, either version 3 of the License, or (at your option)
+ *  any later version.
  *
- *  This is distributed in the hope that it will be useful, but WITHOUT
+ *  ConMan is distributed in the hope that it will be useful, but WITHOUT
  *  ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
  *  FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
  *  for more details.
  *
- *  You should have received a copy of the GNU General Public License
- *  along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *  You should have received a copy of the GNU General Public License along
+ *  with ConMan.  If not, see <http://www.gnu.org/licenses/>.
  *****************************************************************************
  *  Refer to "util-net.h" for documentation on public functions.
  *****************************************************************************/
 
 
-#ifdef HAVE_CONFIG_H
-#  include "config.h"
+#if HAVE_CONFIG_H
+#  include <config.h>
 #endif /* HAVE_CONFIG_H */
 
+#include <sys/types.h>                  /* include before in.h for bsd */
+#include <netinet/in.h>                 /* include before inet.h for bsd */
 #include <arpa/inet.h>
 #include <assert.h>
 #include <errno.h>
 #include <netdb.h>
-#include <netinet/in.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <string.h>
@@ -305,7 +306,7 @@ static int validate_hostent_copy(
 #endif /* !NDEBUG */
 
 
-#ifndef HAVE_INET_PTON
+#if ! HAVE_INET_PTON
 int inet_pton(int family, const char *str, void *addr)
 {
 /*  cf. Stevens UNPv1 p72.
@@ -316,7 +317,7 @@ int inet_pton(int family, const char *str, void *addr)
         errno = EAFNOSUPPORT;
         return(-1);
     }
-#ifdef HAVE_INET_ATON
+#if HAVE_INET_ATON
     if (!inet_aton(str, &tmpaddr))
         return(0);
 #else /* !HAVE_INET_ATON */
@@ -330,7 +331,7 @@ int inet_pton(int family, const char *str, void *addr)
 #endif /* !HAVE_INET_PTON */
 
 
-#ifndef HAVE_INET_NTOP
+#if ! HAVE_INET_NTOP
 const char * inet_ntop(int family, const void *addr, char *str, size_t len)
 {
 /*  cf. Stevens UNPv1 p72.

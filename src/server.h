@@ -1,39 +1,43 @@
 /*****************************************************************************
- *  $Id: server.h 959 2009-05-15 01:24:18Z dun $
+ *  $Id: server.h 1059 2011-04-21 00:20:12Z chris.m.dunlap $
  *****************************************************************************
  *  Written by Chris Dunlap <cdunlap@llnl.gov>.
- *  Copyright (C) 2007-2009 Lawrence Livermore National Security, LLC.
+ *  Copyright (C) 2007-2011 Lawrence Livermore National Security, LLC.
  *  Copyright (C) 2001-2007 The Regents of the University of California.
  *  UCRL-CODE-2002-009.
  *
  *  This file is part of ConMan: The Console Manager.
- *  For details, see <http://home.gna.org/conman/>.
+ *  For details, see <http://conman.googlecode.com/>.
  *
- *  This is free software; you can redistribute it and/or modify it
- *  under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; either version 2 of the License, or
- *  (at your option) any later version.
+ *  ConMan is free software: you can redistribute it and/or modify it under
+ *  the terms of the GNU General Public License as published by the Free
+ *  Software Foundation, either version 3 of the License, or (at your option)
+ *  any later version.
  *
- *  This is distributed in the hope that it will be useful, but WITHOUT
+ *  ConMan is distributed in the hope that it will be useful, but WITHOUT
  *  ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
  *  FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
  *  for more details.
  *
- *  You should have received a copy of the GNU General Public License
- *  along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *  You should have received a copy of the GNU General Public License along
+ *  with ConMan.  If not, see <http://www.gnu.org/licenses/>.
  *****************************************************************************/
 
 
 #ifndef _SERVER_H
 #define _SERVER_H
 
+#if HAVE_CONFIG_H
+#  include <config.h>
+#endif /* HAVE_CONFIG_H */
 
-#ifdef WITH_FREEIPMI
-#include <ipmiconsole.h>
-#endif /* WITH_FREEIPMI */
+#if HAVE_IPMICONSOLE_H
+#  include <ipmiconsole.h>
+#endif /* HAVE_IPMICONSOLE_H */
+
+#include <sys/types.h>                  /* include before in.h for bsd */
 #include <netinet/in.h>                 /* for struct sockaddr_in            */
 #include <pthread.h>
-#include <sys/types.h>
 #include <termios.h>                    /* for struct termios, speed_t       */
 #include <time.h>                       /* for time_t                        */
 #include "common.h"
@@ -41,6 +45,7 @@
 #include "tpoll.h"
 
 
+#define DEFAULT_LOGOPT_LOCK             1
 #define DEFAULT_LOGOPT_SANITIZE         0
 #define DEFAULT_LOGOPT_TIMESTAMP        0
 
@@ -49,7 +54,7 @@
 #define DEFAULT_SEROPT_PARITY           0
 #define DEFAULT_SEROPT_STOPBITS         1
 
-#ifdef WITH_FREEIPMI
+#if WITH_FREEIPMI
 #define IPMI_ENGINE_CONSOLES_PER_THREAD 128
 #define IPMI_MAX_USER_LEN               IPMI_MAX_USER_NAME_LENGTH
 #define IPMI_MAX_PSWD_LEN               IPMI_2_0_MAX_PASSWORD_LENGTH
@@ -59,7 +64,7 @@
 #define IPMI_MIN_TIMEOUT                60
 #endif /* WITH_FREEIPMI */
 
-#define PROCESS_MAX_COUNT               3
+#define PROCESS_MAX_TIMEOUT             1800
 #define PROCESS_MIN_TIMEOUT             60
 
 #define RESET_CMD_TIMEOUT               60
@@ -79,9 +84,7 @@ enum obj_type {                         /* type of auxiliary obj (3 bits)    */
     CONMAN_OBJ_SERIAL,
     CONMAN_OBJ_TELNET,
     CONMAN_OBJ_UNIXSOCK,
-#ifdef WITH_FREEIPMI
     CONMAN_OBJ_IPMI,
-#endif /* WITH_FREEIPMI */
     CONMAN_OBJ_LAST_ENTRY
 };
 
@@ -93,6 +96,7 @@ typedef struct client_obj {             /* CLIENT AUX OBJ DATA:              */
 } client_obj_t;
 
 typedef struct logfile_opt {            /* LOGFILE OBJ OPTIONS:              */
+    unsigned         enableLock:1;      /*  true if logfile being locked     */
     unsigned         enableSanitize:1;  /*  true if logfile being sanitized  */
     unsigned         enableTimestamp:1; /*  true if timestamping each line   */
 } logopt_t;
@@ -113,14 +117,20 @@ typedef struct logfile_obj {            /* LOGFILE AUX OBJ DATA:             */
     unsigned         lineState:2;       /*  log_line_state_t CR/LF state     */
 } logfile_obj_t;
 
+typedef enum process_connect_state {    /* process connection state (1 bit)  */
+    CONMAN_PROCESS_DOWN,
+    CONMAN_PROCESS_UP
+} process_state_t;
+
 typedef struct process_obj {            /* PROCESS AUX OBJ DATA              */
     char           **argv;              /*  NULL-term'd ary of ptrs to strs  */
     char            *prog;              /*  reference to basename of argv[0] */
-    int              count;             /*  num attempts at process exec     */
     int              timer;             /*  timer id for repeated attempts   */
+    int              delay;             /*  secs 'til next reconnect attempt */
     pid_t            pid;               /*  pid of forked process            */
     time_t           tStart;            /*  time at which process was exec'd */
     struct base_obj *logfile;           /*  log obj ref for console replay   */
+    unsigned         state:1;           /*  process_state_t conn state       */
 } process_obj_t;
 
 typedef struct serial_opt {             /* SERIAL OBJ OPTIONS:               */
@@ -138,11 +148,11 @@ typedef struct serial_obj {             /* SERIAL AUX OBJ DATA:              */
 } serial_obj_t;
 
 typedef enum telnet_connect_state {     /* state of n/w connection (2 bits)  */
-    CONMAN_TELCON_NONE,
-    CONMAN_TELCON_DOWN,
-    CONMAN_TELCON_PENDING,
-    CONMAN_TELCON_UP
-} telcon_state_t;
+    CONMAN_TELNET_NONE,
+    CONMAN_TELNET_DOWN,
+    CONMAN_TELNET_PENDING,
+    CONMAN_TELNET_UP
+} telnet_state_t;
 
 typedef struct telnet_obj {             /* TELNET AUX OBJ DATA:              */
     char            *host;              /*  remote telnetd host name (or ip) */
@@ -151,7 +161,7 @@ typedef struct telnet_obj {             /* TELNET AUX OBJ DATA:              */
     int              timer;             /*  timer id for reconnects          */
     int              delay;             /*  secs 'til next reconnect attempt */
     int              iac;               /*  -1, or last char if in IAC seq   */
-    unsigned         conState:2;        /*  telcon_state_t of n/w connection */
+    unsigned         state:2;           /*  telnet_state_t of n/w connection */
     unsigned         enableKeepAlive:1; /*  true if using TCP keep-alive     */
 } telnet_obj_t;
 
@@ -167,12 +177,17 @@ typedef struct unixsock_obj {           /* UNIXSOCK AUX OBJ DATA:            */
     unsigned         state:1;           /*  unixsock_state_t conn state      */
 } unixsock_obj_t;
 
-#ifdef WITH_FREEIPMI
+/*  Refer to struct ipmiconsole_ipmi_config in <ipmiconsole.h>.
+ */
+#if WITH_FREEIPMI
 typedef struct ipmi_opt {                               /* IPMI OBJ OPTIONS: */
     char             username[ IPMI_MAX_USER_LEN + 1 ]; /*  BMC username     */
     char             password[ IPMI_MAX_PSWD_LEN + 1 ]; /*  BMC password     */
     unsigned char    kg[ IPMI_MAX_KG_LEN + 1 ];         /*  BMC K_g key      */
     unsigned int     kgLen;                             /*  BMC K_g key len  */
+    int              privilegeLevel;                    /*  auth priv level  */
+    int              cipherSuite;                       /*  cipher suite id  */
+    unsigned int     workaroundFlags;                   /*  workaround flags */
 } ipmiopt_t;
 
 typedef struct ipmiconsole_ctx ipmictx_t;
@@ -191,6 +206,7 @@ typedef struct ipmi_obj {               /* IPMI AUX OBJ DATA:                */
     ipmi_state_t     state;             /*  connection state                 */
     int              timer;             /*  timer id                         */
     int              delay;             /*  secs 'til next reconnect attempt */
+    pthread_mutex_t  mutex;             /*  lock for ctx/state/timer/delay   */
 } ipmi_obj_t;
 #endif /* WITH_FREEIPMI */
 
@@ -201,7 +217,7 @@ typedef union aux_obj {
     serial_obj_t     serial;
     telnet_obj_t     telnet;
     unixsock_obj_t   unixsock;
-#ifdef WITH_FREEIPMI
+#if WITH_FREEIPMI
     ipmi_obj_t       ipmi;
 #endif /* WITH_FREEIPMI */
 } aux_obj_t;
@@ -246,7 +262,7 @@ typedef struct server_conf {
     char            *globalLogName;     /* global log name (must contain &)  */
     logopt_t         globalLogOpts;     /* global opts for logfile objects   */
     seropt_t         globalSerOpts;     /* global opts for serial objects    */
-#ifdef WITH_FREEIPMI
+#if WITH_FREEIPMI
     ipmiopt_t        globalIpmiOpts;    /* global opts for ipmi objects      */
     int              numIpmiObjs;       /* number of ipmi consoles in config */
 #endif /* WITH_FREEIPMI */
@@ -302,25 +318,20 @@ typedef struct client_args {
 /*  Macros
  */
 #define is_client_obj(OBJ)   (OBJ->type == CONMAN_OBJ_CLIENT)
+#define is_ipmi_obj(OBJ)     (OBJ->type == CONMAN_OBJ_IPMI)
 #define is_logfile_obj(OBJ)  (OBJ->type == CONMAN_OBJ_LOGFILE)
 #define is_process_obj(OBJ)  (OBJ->type == CONMAN_OBJ_PROCESS)
 #define is_serial_obj(OBJ)   (OBJ->type == CONMAN_OBJ_SERIAL)
 #define is_telnet_obj(OBJ)   (OBJ->type == CONMAN_OBJ_TELNET)
 #define is_unixsock_obj(OBJ) (OBJ->type == CONMAN_OBJ_UNIXSOCK)
 
-#ifdef WITH_FREEIPMI
-#define is_ipmi_obj(OBJ)     (OBJ->type == CONMAN_OBJ_IPMI)
-#else /* !WITH_FREEIPMI */
-#define is_ipmi_obj(OBJ)     (0)
-#endif /* WITH_FREEIPMI */
-
 #define is_console_obj(OBJ) \
 ( \
   is_telnet_obj(OBJ)   || \
   is_ipmi_obj(OBJ)     || \
-  is_unixsock_obj(OBJ) || \
+  is_process_obj(OBJ)  || \
   is_serial_obj(OBJ)   || \
-  is_process_obj(OBJ)     \
+  is_unixsock_obj(OBJ)    \
 )
 
 
@@ -342,11 +353,15 @@ int process_client_escapes(obj_t *client, void *src, int len);
 
 /* server-ipmi.c
  */
-#ifdef WITH_FREEIPMI
+#if WITH_FREEIPMI
 
 void ipmi_init(int num_consoles);
 
 void ipmi_fini(void);
+
+int is_ipmi_dev(const char *dev, char **host_ref);
+
+int init_ipmi_opts(ipmiopt_t *iopts);
 
 int parse_ipmi_opts(
     ipmiopt_t *iopts, const char *str, char *errbuf, int errlen);
@@ -414,6 +429,9 @@ int write_to_obj(obj_t *obj);
 
 /*  server-process.c
  */
+int is_process_dev(const char *dev, const char *cwd,
+    const char *exec_path, char **path_ref);
+
 obj_t * create_process_obj(server_conf_t *conf, char *name, List args,
     char *errbuf, int errlen);
 
@@ -422,6 +440,8 @@ int open_process_obj(obj_t *process);
 
 /*  server-serial.c
  */
+int is_serial_dev(const char *dev, const char *cwd, char **path_ref);
+
 int parse_serial_opts(
     seropt_t *opts, const char *str, char *errbuf, int errlen);
 
@@ -440,6 +460,8 @@ void process_client(client_arg_t *args);
 
 /*  server-telnet.c
  */
+int is_telnet_dev(const char *dev, char **host_ref, int *port_ref);
+
 obj_t * create_telnet_obj(server_conf_t *conf, char *name,
     char *host, int port, char *errbuf, int errlen);
 
@@ -452,6 +474,8 @@ int send_telnet_cmd(obj_t *telnet, int cmd, int opt);
 
 /*  server-unixsock.c
  */
+int is_unixsock_dev(const char *dev, const char *cwd, char **path_ref);
+
 obj_t * create_unixsock_obj(server_conf_t *conf, char *name, char *dev,
     char *errbuf, int errlen);
 

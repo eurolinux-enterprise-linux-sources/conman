@@ -1,33 +1,33 @@
 /*****************************************************************************
- *  $Id: util-str.c 902 2009-02-13 06:11:56Z dun $
+ *  $Id: util-str.c 1033 2011-04-06 21:53:48Z chris.m.dunlap $
  *****************************************************************************
  *  Written by Chris Dunlap <cdunlap@llnl.gov>.
- *  Copyright (C) 2007-2009 Lawrence Livermore National Security, LLC.
+ *  Copyright (C) 2007-2011 Lawrence Livermore National Security, LLC.
  *  Copyright (C) 2001-2007 The Regents of the University of California.
  *  UCRL-CODE-2002-009.
  *
  *  This file is part of ConMan: The Console Manager.
- *  For details, see <http://home.gna.org/conman/>.
+ *  For details, see <http://conman.googlecode.com/>.
  *
- *  This is free software; you can redistribute it and/or modify it
- *  under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; either version 2 of the License, or
- *  (at your option) any later version.
+ *  ConMan is free software: you can redistribute it and/or modify it under
+ *  the terms of the GNU General Public License as published by the Free
+ *  Software Foundation, either version 3 of the License, or (at your option)
+ *  any later version.
  *
- *  This is distributed in the hope that it will be useful, but WITHOUT
+ *  ConMan is distributed in the hope that it will be useful, but WITHOUT
  *  ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
  *  FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
  *  for more details.
  *
- *  You should have received a copy of the GNU General Public License
- *  along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *  You should have received a copy of the GNU General Public License along
+ *  with ConMan.  If not, see <http://www.gnu.org/licenses/>.
  *****************************************************************************
  *  Refer to "util-str.h" for documentation on public functions.
  *****************************************************************************/
 
 
-#ifdef HAVE_CONFIG_H
-#  include "config.h"
+#if HAVE_CONFIG_H
+#  include <config.h>
 #endif /* HAVE_CONFIG_H */
 
 #include <assert.h>
@@ -360,7 +360,7 @@ int write_time_string(time_t t, char *dst, size_t dstlen)
 
 struct tm * get_localtime(time_t *tPtr, struct tm *tmPtr)
 {
-#ifndef HAVE_LOCALTIME_R
+#if ! HAVE_LOCALTIME_R
 
     static pthread_mutex_t localtimeLock = PTHREAD_MUTEX_INITIALIZER;
     struct tm *tmTmpPtr;
@@ -376,7 +376,7 @@ struct tm * get_localtime(time_t *tPtr, struct tm *tmPtr)
         }
     }
 
-#ifndef HAVE_LOCALTIME_R
+#if ! HAVE_LOCALTIME_R
 
     /*  localtime() is not thread-safe, so it is protected by a mutex.
      */
@@ -399,7 +399,7 @@ struct tm * get_localtime(time_t *tPtr, struct tm *tmPtr)
 }
 
 
-#ifndef HAVE_STRCASECMP
+#if ! HAVE_STRCASECMP
 int strcasecmp(const char *s1, const char *s2)
 {
     const char *p, *q;
@@ -414,7 +414,7 @@ int strcasecmp(const char *s1, const char *s2)
 #endif /* !HAVE_STRCASECMP */
 
 
-#ifndef HAVE_STRNCASECMP
+#if ! HAVE_STRNCASECMP
 int strncasecmp(const char *s1, const char *s2, size_t n)
 {
     const char *p, *q;
@@ -432,7 +432,7 @@ int strncasecmp(const char *s1, const char *s2, size_t n)
 #endif /* !HAVE_STRNCASECMP */
 
 
-#ifndef HAVE_TOINT
+#if ! HAVE_TOINT
 int toint(int c)
 {
 /*  Returns the "weight" (0-15) of a hexadecimal digit 'c'.
