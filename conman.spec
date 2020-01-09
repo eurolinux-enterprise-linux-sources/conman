@@ -1,6 +1,6 @@
 Name:               conman
 Version:            0.2.7
-Release:            12%{?dist}
+Release:            15%{?dist}
 Summary:            ConMan - The Console Manager
 
 Group:              Applications/System
@@ -12,6 +12,8 @@ Source2:            %{name}.logrotate
 Patch1:             conman-0.2.5-openfiles.patch
 Patch2:             conman-0.2.5-strftime.patch
 Patch3:             conman-0.2.7-num_threads.patch
+Patch4:             conman-0.2.7-hack-around-overflow-issue.patch
+
 BuildRoot:          %{_tmppath}/%{name}-%{version}-%{release}-root-%(%{__id_u} -n)
 
 Requires:           logrotate
@@ -40,6 +42,7 @@ Its features include:
 %patch1 -b .openfiles -p1
 %patch2 -b .strftime -p1
 %patch3 -b .num_threads -p1
+%patch4 -b .overflowfixhack -p1
 
 %build
 # not really lib material, more like share
@@ -53,7 +56,18 @@ chmod -x share/examples/*.exp
 %{__perl} -pi -e 's|-m 755 -s conman|-m 755 conman|g' \
     Makefile.in
 
-%configure --with-tcp-wrappers
+# This is a bit rough, it builds as PIE client tool (conman)
+# in addition to PIEing daemon (conmand). But for finer granularity,
+# we'd need to patch Makefile.in to make it possible to have different
+# CFLAGS et al for these two binaries.
+%ifarch s390 s390x sparcv9 sparc64
+export PIECFLAGS="-fPIE"
+%else
+export PIECFLAGS="-fpie"
+%endif
+export RELRO="-Wl,-z,relro,-z,now"
+
+%configure --with-tcp-wrappers CFLAGS="$CFLAGS $PIECFLAGS $RELRO" CXXFLAGS="$CXXFLAGS $PIECFLAGS $RELRO" LDFLAGS="$LDFLAGS -pie"
 make %{?_smp_mflags}
 
 %install
@@ -127,6 +141,15 @@ fi
 %{_mandir}/*/*
 
 %changelog
+* Fri May 13 2016 David Sommerseth <davids@redhat.com> - 0.2.7-15
+- Fix lost CFFLAGS/CXXFLAGS/LDFLAGS from RELRO/PIE fixes in 0.2.7-13 (1092546)
+
+* Fri May 13 2016 David Sommerseth <davids@redhat.com> - 0.2.7-14
+- Fix buffer overflow issue triggered by PIE/RELRO builds (1092546)
+
+* Mon Sep 14 2015 Denys Vlasenko <dvlasenk@redhat.com> - 0.2.7-13
+- Build executables with RELRO and PIE (1092546)
+
 * Fri Jul 17 2015 Denys Vlasenko <dvlasenk@redhat.com> - 0.2.7-12
 - Remove unused /etc/sysconfig/conman.
 - Resolves: rhbz#1244219.
