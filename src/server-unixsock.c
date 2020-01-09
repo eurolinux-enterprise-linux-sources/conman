@@ -1,13 +1,11 @@
 /*****************************************************************************
- *  $Id: server-unixsock.c 1037 2011-04-07 20:02:56Z chris.m.dunlap $
- *****************************************************************************
  *  Written by Chris Dunlap <cdunlap@llnl.gov>.
- *  Copyright (C) 2007-2011 Lawrence Livermore National Security, LLC.
+ *  Copyright (C) 2007-2016 Lawrence Livermore National Security, LLC.
  *  Copyright (C) 2001-2007 The Regents of the University of California.
  *  UCRL-CODE-2002-009.
  *
  *  This file is part of ConMan: The Console Manager.
- *  For details, see <http://conman.googlecode.com/>.
+ *  For details, see <https://dun.github.io/conman/>.
  *
  *  ConMan is free software: you can redistribute it and/or modify it under
  *  the terms of the GNU General Public License as published by the Free
@@ -39,15 +37,18 @@
 #include <sys/un.h>
 #include "inevent.h"
 #include "list.h"
+#include "log.h"
 #include "server.h"
 #include "tpoll.h"
+#include "util.h"
 #include "util-file.h"
 #include "util-str.h"
 
 
-static int max_unixsock_dev_strlen(void);
+static size_t max_unixsock_dev_strlen(void);
 static int connect_unixsock_obj(obj_t *unixsock);
 static int disconnect_unixsock_obj(obj_t *unixsock);
+static void reset_unixsock_delay(obj_t *unixsock);
 
 extern tpoll_t tp_global;               /* defined in server.c */
 
@@ -69,7 +70,7 @@ int is_unixsock_dev(const char *dev, const char *cwd, char **path_ref)
     }
     if ((dev[0] != '/') && (cwd != NULL)) {
         n = snprintf(buf, sizeof(buf), "%s/%s", cwd, dev);
-        if ((n < 0) || (n >= sizeof(buf))) {
+        if ((n < 0) || ((size_t) n >= sizeof(buf))) {
             return(0);
         }
         dev = buf;
@@ -87,7 +88,7 @@ obj_t * create_unixsock_obj(server_conf_t *conf, char *name, char *dev,
 /*  Creates a new unix domain object and adds it to the master objs list.
  *  Returns the new objects, or NULL on error.
  */
-    int           n;
+    size_t        n;
     ListIterator  i;
     obj_t        *unixsock;
     int           rv;
@@ -102,8 +103,11 @@ obj_t * create_unixsock_obj(server_conf_t *conf, char *name, char *dev,
      */
     n = max_unixsock_dev_strlen();
     if (strlen(dev) > n) {
-        snprintf(errbuf, errlen,
-            "console [%s] exceeds maximum device length of %d bytes", name, n);
+        if ((errbuf != NULL) && (errlen > 0)) {
+            snprintf(errbuf, errlen,
+                "console [%s] exceeds maximum device length of %lu bytes",
+                name, (unsigned long) n);
+        }
         return(NULL);
     }
     /*  Check for duplicate console and device names.
@@ -111,14 +115,19 @@ obj_t * create_unixsock_obj(server_conf_t *conf, char *name, char *dev,
     i = list_iterator_create(conf->objs);
     while ((unixsock = list_next(i))) {
         if (is_console_obj(unixsock) && !strcmp(unixsock->name, name)) {
-            snprintf(errbuf, errlen,
-                "console [%s] specifies duplicate console name", name);
+            if ((errbuf != NULL) && (errlen > 0)) {
+                snprintf(errbuf, errlen,
+                    "console [%s] specifies duplicate console name", name);
+            }
             break;
         }
         if (is_unixsock_obj(unixsock)
                 && !strcmp(unixsock->aux.unixsock.dev, dev)) {
-            snprintf(errbuf, errlen,
-                "console [%s] specifies duplicate device \"%s\"", name, dev);
+            if ((errbuf != NULL) && (errlen > 0)) {
+                snprintf(errbuf, errlen,
+                    "console [%s] specifies duplicate device \"%s\"",
+                    name, dev);
+            }
             break;
         }
     }
@@ -131,6 +140,7 @@ obj_t * create_unixsock_obj(server_conf_t *conf, char *name, char *dev,
     unixsock->aux.unixsock.logfile = NULL;
     unixsock->aux.unixsock.timer = -1;
     unixsock->aux.unixsock.state = CONMAN_UNIXSOCK_DOWN;
+    unixsock->aux.unixsock.delay = UNIXSOCK_MIN_TIMEOUT;
     /*
      *  Add obj to the master conf->objs list.
      */
@@ -167,7 +177,7 @@ int open_unixsock_obj(obj_t *unixsock)
 }
 
 
-static int max_unixsock_dev_strlen(void)
+static size_t max_unixsock_dev_strlen(void)
 {
 /*  Returns the maximum string length allowed for a unix domain device.
  *
@@ -191,7 +201,7 @@ static int connect_unixsock_obj(obj_t *unixsock)
     unixsock_obj_t     *auxp;
     struct stat         st;
     struct sockaddr_un  saddr;
-    int                 rc;
+    size_t              n;
 
     assert(unixsock != NULL);
     assert(is_unixsock_obj(unixsock));
@@ -217,23 +227,25 @@ static int connect_unixsock_obj(obj_t *unixsock)
      *    not being a socket.
      */
     if (!S_ISSOCK(st.st_mode)) {
-        log_msg(LOG_INFO, "Console [%s] device \"%s\" is not a socket",
-            unixsock->name, auxp->dev, strerror(errno));
+        log_msg(LOG_NOTICE, "Console [%s] device \"%s\" is not a socket",
+            unixsock->name, auxp->dev);
         return(disconnect_unixsock_obj(unixsock));
     }
 #endif /* S_ISSOCK */
 
     memset(&saddr, 0, sizeof(saddr));
     saddr.sun_family = AF_UNIX;
-    rc = strlcpy(saddr.sun_path, auxp->dev, sizeof(saddr.sun_path));
-    assert(rc < sizeof(saddr.sun_path));
-
+    n = strlcpy(saddr.sun_path, auxp->dev, sizeof(saddr.sun_path));
+    if (n >= sizeof(saddr.sun_path)) {
+        log_msg(LOG_NOTICE,
+            "Console [%s] device path exceeds %lu-byte maximum",
+            unixsock->name, (unsigned long) sizeof(saddr.sun_path) - 1);
+        return(disconnect_unixsock_obj(unixsock));
+    }
     if ((unixsock->fd = socket(AF_UNIX, SOCK_STREAM, 0)) < 0) {
-        /*
-         *  This error should probably not be considered fatal,
-         *    but since it is elsewhere in the code, it is here as well.
-         */
-        log_err(errno, "Unable to create console [%s] socket", unixsock->name);
+        log_msg(LOG_INFO, "Console [%s] cannot create socket: %s",
+            unixsock->name, strerror(errno));
+        return(disconnect_unixsock_obj(unixsock));
     }
     set_fd_nonblocking(unixsock->fd);
     set_fd_closed_on_exec(unixsock->fd);
@@ -243,8 +255,7 @@ static int connect_unixsock_obj(obj_t *unixsock)
      */
     if (connect(unixsock->fd,
             (struct sockaddr *) &saddr, sizeof(saddr)) < 0) {
-        log_msg(LOG_INFO,
-            "Console [%s] cannot connect to device \"%s\": %s",
+        log_msg(LOG_INFO, "Console [%s] cannot connect to device \"%s\": %s",
             unixsock->name, auxp->dev, strerror(errno));
         return(disconnect_unixsock_obj(unixsock));
     }
@@ -255,10 +266,17 @@ static int connect_unixsock_obj(obj_t *unixsock)
      */
     unixsock->gotEOF = 0;
     auxp->state = CONMAN_UNIXSOCK_UP;
+    tpoll_set(tp_global, unixsock->fd, POLLIN);
+
+    /*  Require the connection to be up for a minimum length of time before
+     *    resetting the reconnect-delay back to the minimum.
+     */
+    auxp->timer = tpoll_timeout_relative(tp_global,
+        (callback_f) reset_unixsock_delay, unixsock, MIN_CONNECT_SECS * 1000);
 
     /*  Notify linked objs when transitioning into an UP state.
      */
-    write_notify_msg(unixsock, LOG_NOTICE, "Console [%s] connected to \"%s\"",
+    write_notify_msg(unixsock, LOG_INFO, "Console [%s] connected to \"%s\"",
         unixsock->name, auxp->dev);
     DPRINTF((9, "Opened [%s] unixsock: fd=%d dev=%s.\n",
             unixsock->name, unixsock->fd, auxp->dev));
@@ -285,9 +303,9 @@ static int disconnect_unixsock_obj(obj_t *unixsock)
         auxp->timer = -1;
     }
     if (unixsock->fd >= 0) {
+        tpoll_clear(tp_global, unixsock->fd, POLLIN | POLLOUT);
         if (close(unixsock->fd) < 0) {
-            log_msg(LOG_ERR,
-                "Unable to close console [%s] socket \"%s\": %s",
+            log_msg(LOG_WARNING, "Console [%s] cannot close device \"%s\": %s",
                 unixsock->name, auxp->dev, strerror(errno));
         }
         unixsock->fd = -1;
@@ -296,15 +314,40 @@ static int disconnect_unixsock_obj(obj_t *unixsock)
      */
     if (auxp->state == CONMAN_UNIXSOCK_UP) {
         auxp->state = CONMAN_UNIXSOCK_DOWN;
-        write_notify_msg(unixsock, LOG_NOTICE,
+        write_notify_msg(unixsock, LOG_INFO,
             "Console [%s] disconnected from \"%s\"",
             unixsock->name, auxp->dev);
     }
     /*  Set timer for establishing new connection.
      */
     auxp->timer = tpoll_timeout_relative(tp_global,
-        (callback_f) connect_unixsock_obj, unixsock,
-        UNIXSOCK_RETRY_TIMEOUT * 1000);
+        (callback_f) connect_unixsock_obj, unixsock, auxp->delay * 1000);
 
+    if (auxp->delay < UNIXSOCK_MAX_TIMEOUT) {
+        auxp->delay = MIN(auxp->delay * 2, UNIXSOCK_MAX_TIMEOUT);
+    }
     return(-1);
+}
+
+
+static void reset_unixsock_delay(obj_t *unixsock)
+{
+/*  Resets the unixsock obj's reconnect-delay after the connection has been up
+ *    for the minimum length of time.  This protects against spinning on
+ *    reconnects when the connection immediately terminates.
+ */
+    unixsock_obj_t *auxp;
+
+    assert(unixsock != NULL);
+    assert(is_unixsock_obj(unixsock));
+
+    auxp = &(unixsock->aux.unixsock);
+
+    /*  Reset the timer ID since this routine is only invoked by a timer.
+     */
+    auxp->timer = -1;
+
+    DPRINTF((15, "Reset [%s] reconnect delay\n", unixsock->name));
+    auxp->delay = UNIXSOCK_MIN_TIMEOUT;
+    return;
 }

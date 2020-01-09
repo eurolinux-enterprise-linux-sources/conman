@@ -1,13 +1,11 @@
 /*****************************************************************************
- *  $Id: server-serial.c 1037 2011-04-07 20:02:56Z chris.m.dunlap $
- *****************************************************************************
  *  Written by Chris Dunlap <cdunlap@llnl.gov>.
- *  Copyright (C) 2007-2011 Lawrence Livermore National Security, LLC.
+ *  Copyright (C) 2007-2016 Lawrence Livermore National Security, LLC.
  *  Copyright (C) 2001-2007 The Regents of the University of California.
  *  UCRL-CODE-2002-009.
  *
  *  This file is part of ConMan: The Console Manager.
- *  For details, see <http://conman.googlecode.com/>.
+ *  For details, see <https://dun.github.io/conman/>.
  *
  *  ConMan is free software: you can redistribute it and/or modify it under
  *  the terms of the GNU General Public License as published by the Free
@@ -42,8 +40,11 @@
 #include "list.h"
 #include "log.h"
 #include "server.h"
+#include "tpoll.h"
 #include "util-file.h"
 #include "util-str.h"
+
+extern tpoll_t tp_global;               /* defined in server.c */
 
 
 typedef struct bps_tag {
@@ -101,7 +102,7 @@ int is_serial_dev(const char *dev, const char *cwd, char **path_ref)
 
     if ((dev[0] != '/') && (cwd != NULL)) {
         n = snprintf(buf, sizeof(buf), "%s/%s", cwd, dev);
-        if ((n < 0) || (n >= sizeof(buf))) {
+        if ((n < 0) || ((size_t) n >= sizeof(buf))) {
             return(0);
         }
         dev = buf;
@@ -339,13 +340,18 @@ obj_t * create_serial_obj(server_conf_t *conf, char *name,
     i = list_iterator_create(conf->objs);
     while ((serial = list_next(i))) {
         if (is_console_obj(serial) && !strcmp(serial->name, name)) {
-            snprintf(errbuf, errlen,
-                "console [%s] specifies duplicate console name", name);
+            if ((errbuf != NULL) && (errlen > 0)) {
+                snprintf(errbuf, errlen,
+                    "console [%s] specifies duplicate console name", name);
+            }
             break;
         }
         if (is_serial_obj(serial) && !strcmp(serial->aux.serial.dev, dev)) {
-            snprintf(errbuf, errlen,
-                "console [%s] specifies duplicate device \"%s\"", name, dev);
+            if ((errbuf != NULL) && (errlen > 0)) {
+                snprintf(errbuf, errlen,
+                    "console [%s] specifies duplicate device \"%s\"",
+                    name, dev);
+            }
             break;
         }
     }
@@ -384,6 +390,7 @@ int open_serial_obj(obj_t *serial)
         write_notify_msg(serial, LOG_INFO,
             "Console [%s] disconnected from \"%s\"",
             serial->name, serial->aux.serial.dev);
+        tpoll_clear(tp_global, serial->fd, POLLIN | POLLOUT);
         set_tty_mode(&serial->aux.serial.tty, serial->fd);
         if (close(serial->fd) < 0)      /* log err and continue */
             log_msg(LOG_WARNING, "Unable to close [%s] device \"%s\": %s",
@@ -430,6 +437,7 @@ int open_serial_obj(obj_t *serial)
     set_tty_mode(&tty, fd);
     serial->fd = fd;
     serial->gotEOF = 0;
+    tpoll_set(tp_global, serial->fd, POLLIN);
     /*
      *  Success!
      */
@@ -442,7 +450,7 @@ int open_serial_obj(obj_t *serial)
 
 err:
     if (fd >= 0) {
-        close(fd);                      /* ignore errors */
+        (void) close(fd);
     }
     return(-1);
 }

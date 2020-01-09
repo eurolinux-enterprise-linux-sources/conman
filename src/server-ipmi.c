@@ -1,15 +1,13 @@
 /*****************************************************************************
- *  $Id: server-ipmi.c 1062 2011-04-21 23:23:49Z chris.m.dunlap $
- *****************************************************************************
  *  Contributed by Levi Pearson <lpearson@lnxi.com>.
  *
  *  Written by Chris Dunlap <cdunlap@llnl.gov>.
- *  Copyright (C) 2007-2011 Lawrence Livermore National Security, LLC.
+ *  Copyright (C) 2007-2016 Lawrence Livermore National Security, LLC.
  *  Copyright (C) 2001-2007 The Regents of the University of California.
  *  UCRL-CODE-2002-009.
  *
  *  This file is part of ConMan: The Console Manager.
- *  For details, see <http://conman.googlecode.com/>.
+ *  For details, see <https://dun.github.io/conman/>.
  *
  *  ConMan is free software: you can redistribute it and/or modify it under
  *  the terms of the GNU General Public License as published by the Free
@@ -95,6 +93,7 @@ void ipmi_init(int num_consoles)
         return;
     }
     num_threads = ((num_consoles - 1) / IPMI_ENGINE_CONSOLES_PER_THREAD) + 1;
+    num_threads = MIN(num_threads, IPMICONSOLE_THREAD_COUNT_MAX);
 
     if (ipmiconsole_engine_init(num_threads, 0) < 0) {
         log_err(0, "Unable to start IPMI SOL engine");
@@ -192,8 +191,9 @@ int parse_ipmi_opts(
 
     if (strlcpy(buf, str, sizeof(buf)) >= sizeof(buf)) {
         if ((errbuf != NULL) && (errlen > 0)) {
-            snprintf(errbuf, errlen, "ipmiopts string exceeds %d-byte maximum",
-                (int) sizeof(buf) - 1);
+            snprintf(errbuf, errlen,
+                "ipmiopts string exceeds %lu-byte maximum",
+                (unsigned long) sizeof(buf) - 1);
         }
         return(-1);
     }
@@ -294,7 +294,7 @@ static int process_ipmi_opt(
         }
         return(-1);
     }
-    c = toupper(str[0]);
+    c = toupper((int) str[0]);
     p = str + 2;
     switch (c) {
         case 'U':
@@ -333,7 +333,7 @@ static int is_ipmi_opt_tag(const char *str)
     if ((str == NULL) || (str[0] == '\0') || (str[1] != ':')) {
         return(0);
     }
-    switch (toupper(str[0])) {
+    switch (toupper((int) str[0])) {
         case 'U': case 'P': case 'K': case 'L': case 'C': case 'W':
             return(1);
     }
@@ -360,7 +360,7 @@ static int process_ipmi_opt_username(
 
         n = strlcpy(iopts->username, str, sizeof(iopts->username));
 
-        if (n >= sizeof(iopts->username)) {
+        if ((size_t) n >= sizeof(iopts->username)) {
             if ((errbuf != NULL) && (errlen > 0)) {
                 snprintf(errbuf, errlen,
                     "IPMI username exceeds %d-byte maximum",
@@ -394,7 +394,7 @@ static int process_ipmi_opt_password(
         iopts->password[0] = '\0';
     }
     else {
-        int n; 
+        int n;
 
         n = parse_key(iopts->password, str, sizeof(iopts->password));
 
@@ -433,7 +433,7 @@ static int process_ipmi_opt_k_g(
         iopts->kgLen = 0;
     }
     else {
-        int n; 
+        int n;
 
         n = parse_key((char *) iopts->kg, str, sizeof(iopts->kg));
 
@@ -677,11 +677,11 @@ static int parse_key(char *dst, const char *src, size_t dstlen)
     }
     else {
         n = strlcpy(dst, src, dstlen);
-        if (n >= dstlen) {
+        if ((size_t) n >= dstlen) {
             return(-1);
         }
     }
-    assert(n < dstlen);
+    assert((n >= 0) && ((size_t) n < dstlen));
     return(n);
 }
 
@@ -704,14 +704,18 @@ obj_t * create_ipmi_obj(server_conf_t *conf, char *name,
     i = list_iterator_create(conf->objs);
     while ((ipmi = list_next(i))) {
         if (is_console_obj(ipmi) && !strcmp(ipmi->name, name)) {
-            snprintf(errbuf, errlen,
-                "console [%s] specifies duplicate console name", name);
+            if ((errbuf != NULL) && (errlen > 0)) {
+                snprintf(errbuf, errlen,
+                    "console [%s] specifies duplicate console name", name);
+            }
             break;
         }
         if (is_ipmi_obj(ipmi) && !strcmp(ipmi->aux.ipmi.host, host)) {
-            snprintf(errbuf, errlen,
-                "console [%s] specifies duplicate hostname \"%s\"",
-                name, host);
+            if ((errbuf != NULL) && (errlen > 0)) {
+                snprintf(errbuf, errlen,
+                    "console [%s] specifies duplicate hostname \"%s\"",
+                    name, host);
+            }
             break;
         }
     }
@@ -788,8 +792,9 @@ static void disconnect_ipmi_obj(obj_t *ipmi)
         ipmi->aux.ipmi.timer = -1;
     }
     if (ipmi->fd >= 0) {
+        tpoll_clear(tp_global, ipmi->fd, POLLIN | POLLOUT);
         if (close(ipmi->fd) < 0) {
-            log_msg(LOG_ERR,
+            log_msg(LOG_WARNING,
                 "Unable to close connection to <%s> for console [%s]: %s",
                 ipmi->aux.ipmi.host, ipmi->name, strerror(errno));
         }
@@ -798,7 +803,7 @@ static void disconnect_ipmi_obj(obj_t *ipmi)
     /*  Notify linked objs when transitioning from an UP state.
      */
     if (ipmi->aux.ipmi.state == CONMAN_IPMI_UP) {
-        write_notify_msg(ipmi, LOG_NOTICE,
+        write_notify_msg(ipmi, LOG_INFO,
             "Console [%s] disconnected from <%s>",
             ipmi->name, ipmi->aux.ipmi.host);
     }
@@ -965,6 +970,7 @@ static int complete_ipmi_connect(obj_t *ipmi)
 
     ipmi->gotEOF = 0;
     ipmi->aux.ipmi.state = CONMAN_IPMI_UP;
+    tpoll_set(tp_global, ipmi->fd, POLLIN);
 
     /*  Require the connection to be up for a minimum length of time
      *    before resetting the reconnect delay back to the minimum.

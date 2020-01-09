@@ -1,13 +1,11 @@
 /*****************************************************************************
- *  $Id: server-sock.c 1033 2011-04-06 21:53:48Z chris.m.dunlap $
- *****************************************************************************
  *  Written by Chris Dunlap <cdunlap@llnl.gov>.
- *  Copyright (C) 2007-2011 Lawrence Livermore National Security, LLC.
+ *  Copyright (C) 2007-2016 Lawrence Livermore National Security, LLC.
  *  Copyright (C) 2001-2007 The Regents of the University of California.
  *  UCRL-CODE-2002-009.
  *
  *  This file is part of ConMan: The Console Manager.
- *  For details, see <http://conman.googlecode.com/>.
+ *  For details, see <https://dun.github.io/conman/>.
  *
  *  ConMan is free software: you can redistribute it and/or modify it under
  *  the terms of the GNU General Public License as published by the Free
@@ -211,6 +209,8 @@ static int resolve_addr(server_conf_t *conf, req_t *req, int sd)
             return(-1);
         }
     }
+#else /* !WITH_TCP_WRAPPERS */
+    (void) gotHostName;         /* suppress unused-but-set-variable warning */
 #endif /* WITH_TCP_WRAPPERS */
 
     return(0);
@@ -549,7 +549,8 @@ static int query_consoles_via_regex(
         if (!is_console_obj(obj))
             continue;
         if (!regexec(&rex, obj->name, 1, &match, 0)
-          && (match.rm_so == 0) && (match.rm_eo == strlen(obj->name)))
+          && (match.rm_so == 0)
+          && (match.rm_eo == (int) strlen(obj->name)))
             list_append(matches, obj);
     }
     list_iterator_destroy(i);
@@ -725,48 +726,58 @@ static int send_rsp(req_t *req, int errnum, char *errmsg)
     if (errnum == CONMAN_ERR_NONE) {
 
         n = append_format_string(buf, sizeof(buf), "%s",
-            proto_strs[LEX_UNTOK(CONMAN_TOK_OK)]);
-
+            LEX_TOK2STR(proto_strs, CONMAN_TOK_OK));
+        if (n == -1) {
+            goto overrun;
+        }
         /*  If consoles have been defined by this point, the "response"
          *    is to the request as opposed to the greeting.
-         *  Yeah, it's a bit of a kludge.
          */
         if (list_count(req->consoles) > 0) {
 
             if (req->enableReset) {
                 n = append_format_string(buf, sizeof(buf), " %s=%s",
-                    proto_strs[LEX_UNTOK(CONMAN_TOK_OPTION)],
-                    proto_strs[LEX_UNTOK(CONMAN_TOK_RESET)]);
+                    LEX_TOK2STR(proto_strs, CONMAN_TOK_OPTION),
+                    LEX_TOK2STR(proto_strs, CONMAN_TOK_RESET));
+                if (n == -1) {
+                    goto overrun;
+                }
             }
             i = list_iterator_create(req->consoles);
             while ((console = list_next(i))) {
                 n = strlcpy(tmp, console->name, sizeof(tmp));
+                if ((size_t) n >= sizeof(tmp)) {
+                    goto overrun;
+                }
                 n = append_format_string(buf, sizeof(buf), " %s='%s'",
-                    proto_strs[LEX_UNTOK(CONMAN_TOK_CONSOLE)],
+                    LEX_TOK2STR(proto_strs, CONMAN_TOK_CONSOLE),
                     lex_encode(tmp));
+                if (n == -1) {
+                    goto overrun;
+                }
             }
             list_iterator_destroy(i);
         }
 
         n = append_format_string(buf, sizeof(buf), "\n");
+        if (n == -1) {
+            goto overrun;
+        }
     }
     else {
         n = strlcpy(tmp, (errmsg ? errmsg : "unspecified error"), sizeof(tmp));
+        if ((size_t) n >= sizeof(tmp)) {
+            goto overrun;
+        }
         n = snprintf(buf, sizeof(buf), "%s %s=%d %s='%s'\n",
-            proto_strs[LEX_UNTOK(CONMAN_TOK_ERROR)],
-            proto_strs[LEX_UNTOK(CONMAN_TOK_CODE)], errnum,
-            proto_strs[LEX_UNTOK(CONMAN_TOK_MESSAGE)], lex_encode(tmp));
+            LEX_TOK2STR(proto_strs, CONMAN_TOK_ERROR),
+            LEX_TOK2STR(proto_strs, CONMAN_TOK_CODE), errnum,
+            LEX_TOK2STR(proto_strs, CONMAN_TOK_MESSAGE), lex_encode(tmp));
+        if ((n < 0) || ((size_t) n >= sizeof(buf))) {
+            goto overrun;
+        }
         log_msg(LOG_NOTICE, "Client <%s@%s:%d> request failed: %s",
             req->user, req->fqdn, req->port, errmsg);
-    }
-
-    /*  FIXME: Gracefully handle buffer overruns.
-     */
-    if ((n < 0) || (n >= sizeof(buf))) {
-        log_msg(LOG_WARNING,
-            "Client <%s@%s:%d> request terminated by buffer overrun",
-            req->user, req->fqdn, req->port);
-        return(-1);
     }
 
     /*  Write response to client.
@@ -779,6 +790,12 @@ static int send_rsp(req_t *req, int errnum, char *errmsg)
 
     DPRINTF((5, "Sent response: %s", buf));
     return(0);
+
+overrun:
+    log_msg(LOG_WARNING,
+        "Client <%s@%s:%d> request terminated due to buffer overrun",
+        req->user, req->fqdn, req->port);
+    return(-1);
 }
 
 
@@ -794,11 +811,12 @@ static int perform_query_cmd(req_t *req)
     assert(req->command == CONMAN_CMD_QUERY);
     assert(!list_is_empty(req->consoles));
 
-    log_msg(LOG_INFO, "Client <%s@%s:%d> issued query command",
+    log_msg(LOG_INFO, "Client <%s@%s:%d> issued query",
         req->user, req->fqdn, req->port);
 
-    if (send_rsp(req, CONMAN_ERR_NONE, NULL) < 0)
+    if (send_rsp(req, CONMAN_ERR_NONE, NULL) < 0) {
         return(-1);
+    }
     destroy_req(req);
     return(0);
 }
@@ -817,16 +835,18 @@ static int perform_monitor_cmd(req_t *req, server_conf_t *conf)
     assert(req->command == CONMAN_CMD_MONITOR);
     assert(list_count(req->consoles) == 1);
 
-    log_msg(LOG_INFO, "Client <%s@%s:%d> issued monitor command",
-        req->user, req->fqdn, req->port);
-
-    if (send_rsp(req, CONMAN_ERR_NONE, NULL) < 0)
+    if (send_rsp(req, CONMAN_ERR_NONE, NULL) < 0) {
         return(-1);
+    }
     client = create_client_obj(conf, req);
     console = list_peek(req->consoles);
     assert(is_console_obj(console));
     link_objs(console, client);
     check_console_state(console, client);
+
+    log_msg(LOG_INFO, "Client <%s@%s:%d> connected to [%s] (read-only)",
+        req->user, req->fqdn, req->port, console->name);
+
     return(0);
 }
 
@@ -846,11 +866,9 @@ static int perform_connect_cmd(req_t *req, server_conf_t *conf)
     assert(req->sd >= 0);
     assert(req->command == CONMAN_CMD_CONNECT);
 
-    log_msg(LOG_INFO, "Client <%s@%s:%d> issued connect command",
-        req->user, req->fqdn, req->port);
-
-    if (send_rsp(req, CONMAN_ERR_NONE, NULL) < 0)
+    if (send_rsp(req, CONMAN_ERR_NONE, NULL) < 0) {
         return(-1);
+    }
     client = create_client_obj(conf, req);
 
     if (list_count(req->consoles) == 1) {
@@ -862,6 +880,9 @@ static int perform_connect_cmd(req_t *req, server_conf_t *conf)
         link_objs(client, console);
         link_objs(console, client);
         check_console_state(console, client);
+
+        log_msg(LOG_INFO, "Client <%s@%s:%d> connected to [%s]",
+            req->user, req->fqdn, req->port, console->name);
     }
     else {
         /*
@@ -874,6 +895,10 @@ static int perform_connect_cmd(req_t *req, server_conf_t *conf)
             check_console_state(console, client);
         }
         list_iterator_destroy(i);
+
+        log_msg(LOG_INFO,
+            "Client <%s@%s:%d> connected to %d consoles (broadcast)",
+            req->user, req->fqdn, req->port, list_count(req->consoles));
     }
     return(0);
 }

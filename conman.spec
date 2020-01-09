@@ -1,16 +1,15 @@
 Name:               conman
-Version:            0.2.7
-Release:            8%{?dist}
+Version:            0.2.8
+Release:            1%{?dist}
 Summary:            ConMan - The Console Manager
 
 Group:              Applications/System
-License:            GPLv2+
-URL:                http://home.gna.org/conman/
-Source0:            http://download.gna.org/%{name}/%{version}/%{name}-%{version}.tar.bz2
+License:            GPLv3+
+URL:                https://dun.github.io/conman/
+Source0:            https://github.com/dun/%{name}/archive/%{name}-%{version}.tar.gz#/%{name}-%{version}.tar.gz
 Source1:            %{name}.service
 Source2:            %{name}.logrotate
-Patch1:             conman-0.2.5-openfiles.patch
-Patch2:             conman-0.2.5-strftime.patch
+
 BuildRoot:          %{_tmppath}/%{name}-%{version}-%{release}-root-%(%{__id_u} -n)
 
 Requires:           logrotate
@@ -19,6 +18,7 @@ Requires(preun): systemd-units
 Requires(postun): systemd-units
 BuildRequires:      tcp_wrappers
 BuildRequires:      systemd-units
+BuildRequires:      freeipmi-devel
 
 %description
 ConMan is a serial console management program designed to support a large
@@ -34,23 +34,29 @@ Its features include:
   - executing Expect scripts across multiple consoles in parallel
 
 %prep
-%setup -q
-%patch1 -b .openfiles -p1
-%patch2 -b .strftime -p1
+%setup -qn %{name}-%{name}-%{version}
+
+# fix paths
+sed -i -e 's|lib\/|share\/|g' lib/examples/*.exp
+
+# fix shebang
+sed -i -e 's|\/usr\/bin\/env perl|\/usr\/bin\/perl|g' conmen
+
 
 %build
-# not really lib material, more like share
-mv lib share
-chmod -x share/examples/*.exp
-%{__perl} -pi.orig -e 's|cd lib|cd share|g' \
-    Makefile.in
-%{__perl} -pi -e 's|lib\/|share\/|g' \
-    Makefile.in share/examples/*.exp
-# don't strip the bins on install, let find-debug.sh do it
-%{__perl} -pi -e 's|-m 755 -s conman|-m 755 conman|g' \
-    Makefile.in
 
-%configure --with-tcp-wrappers
+# This is a bit rough, it builds as PIE client tool (conman)
+# in addition to PIEing daemon (conmand). But for finer granularity,
+# we'd need to patch Makefile.in to make it possible to have different
+# CFLAGS et al for these two binaries.
+%ifarch s390 s390x sparcv9 sparc64
+export PIECFLAGS="-fPIE"
+%else
+export PIECFLAGS="-fpie"
+%endif
+export RELRO="-Wl,-z,relro,-z,now"
+
+%configure --with-tcp-wrappers CFLAGS="$CFLAGS $PIECFLAGS $RELRO" CXXFLAGS="$CXXFLAGS $PIECFLAGS $RELRO" LDFLAGS="$LDFLAGS -pie"
 make %{?_smp_mflags}
 
 %install
@@ -63,10 +69,18 @@ install -m 0644 %{SOURCE2} $RPM_BUILD_ROOT%{_sysconfdir}/logrotate.d/%{name}
 # make log directories
 mkdir -p $RPM_BUILD_ROOT%{_localstatedir}/log/%{name}
 mkdir -p $RPM_BUILD_ROOT%{_localstatedir}/log/%{name}.old
-# examples don't belong in datadir...
-rm -rf $RPM_BUILD_ROOT%{_datadir}/%{name}/examples
-# these shouldn't be executable
-chmod -x $RPM_BUILD_ROOT%{_sysconfdir}/sysconfig/%{name}
+
+# examples don't belong in libdir...
+rm -rf $RPM_BUILD_ROOT%/usr/lib/%{name}/examples
+# move scripts to proper place
+mv $RPM_BUILD_ROOT/usr/lib/%{name} $RPM_BUILD_ROOT%{_datadir}/%{name}
+
+## these shouldn't be executable
+#chmod -x $RPM_BUILD_ROOT%{_sysconfdir}/sysconfig/%{name}
+# rhel7 uses systemd instead of sysV init, /etc/sysconfig/conman
+# is not used. Remove it to reduce user's confusion:
+rm -f $RPM_BUILD_ROOT%{_sysconfdir}/sysconfig/%{name}
+rmdir $RPM_BUILD_ROOT%{_sysconfdir}/sysconfig
 # adjust perms on main config file
 chmod 644 $RPM_BUILD_ROOT%{_sysconfdir}/%{name}.conf
 
@@ -105,10 +119,12 @@ fi
 
 %files
 %defattr(-,root,root,-)
-%doc AUTHORS ChangeLog COPYING FAQ NEWS
-%doc share/examples
+%license COPYING
+%doc AUTHORS FAQ NEWS
+%doc lib/examples
 %config(noreplace) %{_sysconfdir}/%{name}.conf
-%config(noreplace) %{_sysconfdir}/sysconfig/%{name}
+# rhel7 does not use this file:
+#%config(noreplace) %{_sysconfdir}/sysconfig/%{name}
 %config(noreplace) %{_sysconfdir}/logrotate.d/%{name}
 %{_unitdir}/%{name}.service
 %{_localstatedir}/log/%{name}
@@ -119,6 +135,36 @@ fi
 %{_mandir}/*/*
 
 %changelog
+* Tue Aug 29 2017 Ondrej Vasik <ovasik@redhat.com> - 0.2.8-1
+- updated to 0.2.8, spec cleanups, drop overflow hack(#1435840)
+
+* Fri May 13 2016 David Sommerseth <davids@redhat.com> - 0.2.7-15
+- Fix lost CFFLAGS/CXXFLAGS/LDFLAGS from RELRO/PIE fixes in 0.2.7-13 (1092546)
+
+* Fri May 13 2016 David Sommerseth <davids@redhat.com> - 0.2.7-14
+- Fix buffer overflow issue triggered by PIE/RELRO builds (1092546)
+
+* Mon Sep 14 2015 Denys Vlasenko <dvlasenk@redhat.com> - 0.2.7-13
+- Build executables with RELRO and PIE (1092546)
+
+* Fri Jul 17 2015 Denys Vlasenko <dvlasenk@redhat.com> - 0.2.7-12
+- Remove unused /etc/sysconfig/conman.
+- Resolves: rhbz#1244219.
+
+* Fri Jul 17 2015 Denys Vlasenko <dvlasenk@redhat.com> - 0.2.7-11
+- Ensure that num_threads <= IPMICONSOLE_THREAD_COUNT_MAX.
+- Resolves: rhbz#1244189.
+
+* Wed Jul  1 2015 Denys Vlasenko <dvlasenk@redhat.com> - 0.2.7-10
+- Enable IPMI feature.
+- Resolves: rhbz#1084116.
+
+* Wed Apr  8 2015 Denys Vlasenko <dvlasenk@redhat.com> - 0.2.7-9
+- Added commented-out "LimitNOFILE=" directive to conman.service.
+- This is systemd-esque way to change process limits for serivces.
+- Also and a comment when to use it.
+- Resolves: rhbz#1035228.
+
 * Fri Jan 24 2014 Daniel Mach <dmach@redhat.com> - 0.2.7-8
 - Mass rebuild 2014-01-24
 

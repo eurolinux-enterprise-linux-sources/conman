@@ -1,13 +1,11 @@
 /*****************************************************************************
- *  $Id: server.c 1061 2011-04-21 23:13:41Z chris.m.dunlap $
- *****************************************************************************
  *  Written by Chris Dunlap <cdunlap@llnl.gov>.
- *  Copyright (C) 2007-2011 Lawrence Livermore National Security, LLC.
+ *  Copyright (C) 2007-2016 Lawrence Livermore National Security, LLC.
  *  Copyright (C) 2001-2007 The Regents of the University of California.
  *  UCRL-CODE-2002-009.
  *
  *  This file is part of ConMan: The Console Manager.
- *  For details, see <http://conman.googlecode.com/>.
+ *  For details, see <https://dun.github.io/conman/>.
  *
  *  ConMan is free software: you can redistribute it and/or modify it under
  *  the terms of the GNU General Public License as published by the Free
@@ -68,13 +66,12 @@ static void display_configuration(server_conf_t *conf);
 static void schedule_timestamp(server_conf_t *conf);
 static void timestamp_logfiles(server_conf_t *conf);
 static void create_listen_socket(server_conf_t *conf);
+static void setup_nofile_limit(server_conf_t *conf);
 static void open_objs(server_conf_t *conf);
 static void mux_io(server_conf_t *conf);
 static void open_daemon_logfile(server_conf_t *conf);
 static void reopen_logfiles(server_conf_t *conf);
 static void accept_client(server_conf_t *conf);
-static void reset_console(obj_t *console, const char *cmd);
-static void kill_console_reset(pid_t *arg);
 
 /*  Signal handler flags and whatnot.
  */
@@ -97,6 +94,7 @@ int main(int argc, char *argv[])
     pid_t pgid = -1;
     server_conf_t *conf;
     int log_priority = LOG_INFO;
+    char ** const environ_bak = environ;
 
 #ifndef NDEBUG
     log_priority = LOG_DEBUG;
@@ -149,6 +147,7 @@ int main(int argc, char *argv[])
     ipmi_init(conf->numIpmiObjs);
 #endif /* WITH_FREEIPMI */
 
+    setup_nofile_limit(conf);
     open_objs(conf);
     mux_io(conf);
 
@@ -166,6 +165,9 @@ int main(int argc, char *argv[])
     }
     log_msg(LOG_NOTICE, "Stopping ConMan daemon %s (pid %d)",
         VERSION, (int) getpid());
+
+    free(environ);
+    environ = environ_bak;
     exit(0);
 }
 
@@ -325,8 +327,8 @@ static void setup_coredump(server_conf_t *conf)
         if (conf->coreDumpDir) {
             strlcpy(coredumpdir, conf->coreDumpDir, sizeof(coredumpdir));
         }
-        else {
-            getcwd(coredumpdir, sizeof(coredumpdir));
+        else if (!getcwd(coredumpdir, sizeof(coredumpdir))) {
+            log_err(errno, "Unable to get current working directory");
         }
     }
     else {
@@ -397,8 +399,10 @@ static void coredump_handler(int signum)
     }
 
     umask(077);
-    if (coredump && *coredumpdir) {
-        (void) chdir(coredumpdir);
+    if (coredump && *coredumpdir && (chdir(coredumpdir) < 0)) {
+        log_msg(LOG_ERR,
+            "Unable to change directory to coredumpdir \"%s\": %s",
+            coredumpdir, strerror(errno));
     }
     posix_signal(signum, SIG_DFL);
     (void) kill(getpid(), signum);
@@ -664,6 +668,40 @@ static void create_listen_socket(server_conf_t *conf)
         log_err(errno, "Unable to listen on port %d", conf->port);
     }
     conf->ld = ld;
+    tpoll_set(conf->tp, conf->ld, POLLIN);
+    return;
+}
+
+
+static void setup_nofile_limit(server_conf_t *conf)
+{
+/*  Sets the NOFILE limit as specified in the configuration file.
+ *  If set to  0, use the current (soft) limit. (default)
+ *  If set to -1, use the maximum (hard) limit.
+ */
+    struct rlimit limit;
+
+    if (getrlimit(RLIMIT_NOFILE, &limit) < 0) {
+        log_err(errno, "Unable to get open file limit");
+    }
+
+    if (conf->numOpenFiles > 0) {
+        limit.rlim_cur = conf->numOpenFiles;
+        if (limit.rlim_cur > limit.rlim_max) {
+            limit.rlim_max = limit.rlim_cur;
+        }
+    }
+    else if (conf->numOpenFiles < 0) {
+        limit.rlim_cur = limit.rlim_max;
+    }
+
+    if (conf->numOpenFiles) {
+        if (setrlimit(RLIMIT_NOFILE, &limit) < 0) {
+            log_err(errno, "Unable to set open file limit to %d",
+                    limit.rlim_cur);
+        }
+    }
+    log_msg(LOG_INFO, "Open file limit set to %d", limit.rlim_cur);
     return;
 }
 
@@ -671,31 +709,25 @@ static void create_listen_socket(server_conf_t *conf)
 static void open_objs(server_conf_t *conf)
 {
 /*  Initially opens everything in the 'objs' list.
+ *  A ptr to conf->resetCmd is copied into all console objs to avoid passing
+ *    the resetCmd string as a global.  When the reset escape sequence is
+ *    processed by process_client_escapes(), perform_reset() has a ptr to the
+ *    client obj but does not have access to the conf struct in which the
+ *    resetCmd string resides.
+ *  Setting resetCmdRef must occur after the entire config file has been parsed
+ *    (in process_config()); the ResetCmd string might not yet have been
+ *    specified when create_obj() initializes the obj members.
+ *  This function is called once, performs a full traversal of the obj list,
+ *    and allows resetCmdRef to be set before entering mux_io().
  */
-    struct rlimit limit;
     ListIterator i;
     obj_t *obj;
 
-    if (getrlimit(RLIMIT_NOFILE, &limit) < 0) {
-        log_err(errno, "Unable to get open file limit");
-    }
-    if (limit.rlim_cur < limit.rlim_max) {
-        limit.rlim_cur = limit.rlim_max;
-        if (setrlimit(RLIMIT_NOFILE, &limit) < 0) {
-            log_msg(LOG_ERR,
-                "Unable to set open file limit to %d", limit.rlim_cur);
-        }
-        else {
-            log_msg(LOG_INFO,
-                "Increased open file limit to %d", limit.rlim_cur);
-        }
-    }
-    else {
-        log_msg(LOG_INFO, "Open file limit set to %d", limit.rlim_cur);
-    }
-
     i = list_iterator_create(conf->objs);
     while ((obj = list_next(i))) {
+        if (is_console_obj(obj)) {
+            obj->resetCmdRef = conf->resetCmd;
+        }
         reopen_obj(obj);
     }
     list_iterator_destroy(i);
@@ -712,10 +744,15 @@ static void mux_io(server_conf_t *conf)
     int n;
     obj_t *obj;
     int inevent_fd;
+    int rvr, rvw;
 
     assert(conf->tp != NULL);
     assert(!list_is_empty(conf->objs));
 
+    inevent_fd = inevent_get_fd();
+    if (inevent_fd >= 0) {
+        tpoll_set(conf->tp, inevent_get_fd(), POLLIN);
+    }
     i = list_iterator_create(conf->objs);
 
     while (!done) {
@@ -729,73 +766,7 @@ static void mux_io(server_conf_t *conf)
             reopen_logfiles(conf);
             reconfig = 0;
         }
-
-        /*  FIXME: Switch from recomputing the tpoll set on each loop iteration
-         *    to modifying it based on events.  This will eliminate the 1sec
-         *    tpoll() sleep timeout and greatly reduce cpu utilization.
-         *    It will also eliminate the maze of twisty conditions below.
-         */
-        DPRINTF((25, "Recomputing tpoll fd set\n"));
-        (void) tpoll_zero(conf->tp, TPOLL_ZERO_FDS);
-        tpoll_set(conf->tp, conf->ld, POLLIN);
-
-        inevent_fd = inevent_get_fd();
-        if (inevent_fd >= 0) {
-            tpoll_set(conf->tp, inevent_get_fd(), POLLIN);
-        }
-        list_iterator_reset(i);
-        while ((obj = list_next(i))) {
-
-            if (obj->gotReset) {
-                reset_console(obj, conf->resetCmd);
-            }
-            if (obj->fd < 0) {
-                continue;
-            }
-            if ( (
-                   ( is_telnet_obj(obj) &&
-                     obj->aux.telnet.state == CONMAN_TELNET_UP ) ||
-                   ( is_process_obj(obj) &&
-                     obj->aux.process.state == CONMAN_PROCESS_UP ) ||
-#if WITH_FREEIPMI
-                   ( is_ipmi_obj(obj) &&
-                     obj->aux.ipmi.state == CONMAN_IPMI_UP ) ||
-#endif /* WITH_FREEIPMI */
-                   ( is_unixsock_obj(obj) &&
-                     obj->aux.unixsock.state == CONMAN_UNIXSOCK_UP ) ||
-                   is_serial_obj(obj)  ||
-                   is_client_obj(obj)
-                 )
-                 &&
-                 ( ! obj->gotEOF ) )
-            {
-                tpoll_set(conf->tp, obj->fd, POLLIN);
-            }
-            if ( ( (obj->bufInPtr != obj->bufOutPtr) ||
-                   (obj->gotEOF) ) &&
-                 ( ! (is_telnet_obj(obj) &&
-                      obj->aux.telnet.state != CONMAN_TELNET_UP) ) &&
-                 ( ! (is_process_obj(obj) &&
-                      obj->aux.process.state != CONMAN_PROCESS_UP) ) &&
-#if WITH_FREEIPMI
-                 ( ! (is_ipmi_obj(obj) &&
-                      obj->aux.ipmi.state != CONMAN_IPMI_UP) ) &&
-#endif /* WITH_FREEIPMI */
-                 ( ! (is_unixsock_obj(obj) &&
-                      obj->aux.unixsock.state != CONMAN_UNIXSOCK_UP) ) &&
-                 ( ! (is_client_obj(obj) &&
-                      obj->aux.client.gotSuspend) ) )
-            {
-                tpoll_set(conf->tp, obj->fd, POLLOUT);
-            }
-            if (is_telnet_obj(obj) &&
-                obj->aux.telnet.state == CONMAN_TELNET_PENDING)
-            {
-                tpoll_set(conf->tp, obj->fd, POLLIN | POLLOUT);
-            }
-        }
-        DPRINTF((25, "Calling tpoll\n"));
-        while ((n = tpoll(conf->tp, 1000)) < 0) {
+        while ((n = tpoll(conf->tp, -1)) < 0) {
             if (errno != EINTR) {
                 log_err(errno, "Unable to multiplex I/O");
             }
@@ -803,49 +774,38 @@ static void mux_io(server_conf_t *conf)
                 break;
             }
         }
-        if (n <= 0) {
-            continue;
-        }
-        if (tpoll_is_set(conf->tp, conf->ld, POLLIN)) {
+        if ((n > 0) &&
+                (tpoll_is_set(conf->tp, conf->ld, POLLIN) > 0)) {
+            n--;
             accept_client(conf);
         }
-        if ((inevent_fd >= 0) && tpoll_is_set(conf->tp, inevent_fd, POLLIN)) {
+        if ((inevent_fd >= 0) &&
+                (n > 0) &&
+                (tpoll_is_set(conf->tp, inevent_fd, POLLIN) > 0)) {
+            n--;
             inevent_process();
         }
         /*  If read_from_obj() or write_to_obj() returns -1,
-         *    the obj's buffer has been flushed.  If it is a telnet obj,
+         *    the obj's buffer has been flushed.  If it is a console obj,
          *    retain it and attempt to re-establish the connection;
          *    o/w, give up and remove it from the master objs list.
          */
         list_iterator_reset(i);
-        while ((obj = list_next(i))) {
+        while ((n > 0) &&
+                ((obj = list_next(i)) != NULL)) {
 
-            if (obj->fd < 0) {
+            rvr = tpoll_is_set(conf->tp, obj->fd, POLLIN | POLLHUP | POLLERR);
+            rvw = tpoll_is_set(conf->tp, obj->fd, POLLOUT);
+            if ((rvr > 0) || (rvw > 0)) {
+                n--;
+            }
+            if ((rvr > 0) && (read_from_obj(obj) < 0)) {
+                list_delete(i);
                 continue;
             }
-            if (is_telnet_obj(obj)
-              && tpoll_is_set(conf->tp, obj->fd, POLLIN | POLLOUT)
-              && (obj->aux.telnet.state == CONMAN_TELNET_PENDING)) {
-                open_telnet_obj(obj);
+            if ((rvw > 0) && (write_to_obj(obj) < 0)) {
+                list_delete(i);
                 continue;
-            }
-            if (tpoll_is_set(conf->tp, obj->fd, POLLIN | POLLHUP | POLLERR)) {
-                if (read_from_obj(obj, conf->tp) < 0) {
-                    list_delete(i);
-                    continue;
-                }
-                if (obj->fd < 0) {
-                    continue;
-                }
-            }
-            if (tpoll_is_set(conf->tp, obj->fd, POLLOUT)) {
-                if (write_to_obj(obj) < 0) {
-                    list_delete(i);
-                    continue;
-                }
-                if (obj->fd < 0) {
-                    continue;
-                }
             }
         }
     }
@@ -1042,100 +1002,6 @@ static void accept_client(server_conf_t *conf)
     if ((rc = pthread_create(&tid, NULL,
       (PthreadFunc) process_client, args)) != 0) {
         log_err(rc, "Unable to create new thread");
-    }
-    return;
-}
-
-
-static void reset_console(obj_t *console, const char *cmd)
-{
-/*  Resets the 'console' obj by performing the reset 'cmd' in a subshell.
- */
-    char buf[MAX_LINE];
-    pid_t pid;
-    pid_t *arg;
-
-    assert(is_console_obj(console));
-    assert(console->gotReset);
-    assert(cmd != NULL);
-
-    console->gotReset = 0;
-
-    if (format_obj_string(buf, sizeof(buf), console, cmd) < 0) {
-        log_msg(LOG_NOTICE, "Unable to reset console [%s]: command too long",
-            console->name);
-        return;
-    }
-    if ((pid = fork()) < 0) {
-        log_msg(LOG_NOTICE, "Unable to reset console [%s]: %s",
-            console->name, strerror(errno));
-        return;
-    }
-    else if (pid == 0) {
-        setpgid(pid, 0);
-        close(STDIN_FILENO);            /* ignore errors on close() */
-        close(STDOUT_FILENO);
-        close(STDERR_FILENO);
-        execl("/bin/sh", "sh", "-c", buf, (char *) NULL);
-        _exit(127);                     /* execl() error */
-    }
-    /*  Both parent and child call setpgid() to make the child a process
-     *    group leader.  One of these calls is redundant, but by doing
-     *    both we avoid a race condition.  (cf. APUE 9.4 p244)
-     */
-    setpgid(pid, 0);
-
-    /*  FIXME: Have perform_reset() store the client info instead of a bool
-     *    for gotReset.  Then remove the notify_objs msg from perform_reset()
-     *    and replace it with the following:
-     */
-    log_msg(LOG_INFO, "Reset console [%s] (pid %d)", console->name, pid);
-#if 0
-    snprintf(buf, sizeof(buf), "%sConsole [%s] reset (pid %d)%s",
-        CONMAN_MSG_PREFIX, console->name, (int) pid, CONMAN_MSG_SUFFIX);
-    strcpy(&buf[sizeof(buf) - 3], "\r\n");
-    notify_console_objs(console, buf);
-#endif
-
-    /*  Set a timer to ensure the reset cmd does not exceed its time limit.
-     *  The callback function's arg must be allocated on the heap since
-     *    local vars on the stack will be lost once this routine returns.
-     */
-    if (!(arg = malloc(sizeof *arg))) {
-        out_of_memory();
-    }
-    *arg = pid;
-
-    if (tpoll_timeout_relative (tp_global,
-            (callback_f) kill_console_reset, arg,
-            RESET_CMD_TIMEOUT * 1000) < 0) {
-        log_msg(LOG_ERR,
-            "Unable to create timer for resetting console [%s]",
-            console->name);
-    }
-    return;
-}
-
-
-static void kill_console_reset(pid_t *arg)
-{
-/*  Terminates the "ResetCmd" process associated with 'arg' if it has
- *    exceeded its time limit.
- *  Memory allocated to 'arg' will be free()'d by this routine.
- */
-    pid_t pid;
-
-    assert(arg != NULL);
-    pid = *arg;
-    assert(pid > 0);
-    free(arg);
-
-    if (kill(pid, 0) < 0) {             /* process is no longer running */
-        return;
-    }
-    if (kill(-pid, SIGKILL) == 0) {     /* kill entire process group */
-        log_msg(LOG_NOTICE, "ResetCmd process pid=%d exceeded %ds time limit",
-            (int) pid, RESET_CMD_TIMEOUT);
     }
     return;
 }

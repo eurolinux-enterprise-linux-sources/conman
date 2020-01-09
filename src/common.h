@@ -1,13 +1,11 @@
 /*****************************************************************************
- *  $Id: common.h 1033 2011-04-06 21:53:48Z chris.m.dunlap $
- *****************************************************************************
  *  Written by Chris Dunlap <cdunlap@llnl.gov>.
- *  Copyright (C) 2007-2011 Lawrence Livermore National Security, LLC.
+ *  Copyright (C) 2007-2016 Lawrence Livermore National Security, LLC.
  *  Copyright (C) 2001-2007 The Regents of the University of California.
  *  UCRL-CODE-2002-009.
  *
  *  This file is part of ConMan: The Console Manager.
- *  For details, see <http://conman.googlecode.com/>.
+ *  For details, see <https://dun.github.io/conman/>.
  *
  *  ConMan is free software: you can redistribute it and/or modify it under
  *  the terms of the GNU General Public License as published by the Free
@@ -60,13 +58,15 @@
 
 /*  Notes regarding the recommended sizes of various constants:
  *
- *    - MAX_BUF_SIZE >= CONMAN_REPLAY_LEN * 2
+ *    - OBJ_BUF_SIZE >= LOG_REPLAY_LEN * 2
+ *    - OBJ_BUF_SIZE >= MAX_LINE
  *    - MAX_BUF_SIZE >= MAX_LINE
  *    - MAX_SOCK_LINE >= MAX_LINE
  */
-#define CONMAN_REPLAY_LEN       4096
-#define MAX_BUF_SIZE            8192
-#define MAX_SOCK_LINE           32768   /* XXX: MCR kludge (was 8192) */
+#define OBJ_BUF_SIZE            16384
+#define LOG_REPLAY_LEN          4096
+#define MAX_BUF_SIZE            4096
+#define MAX_SOCK_LINE           131072
 #define MAX_LINE                1024
 
 /*  Escape codes used to send ctrl info 'tween client & server.

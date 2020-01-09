@@ -1,13 +1,11 @@
 /*****************************************************************************
- *  $Id: server-esc.c 1033 2011-04-06 21:53:48Z chris.m.dunlap $
- *****************************************************************************
  *  Written by Chris Dunlap <cdunlap@llnl.gov>.
- *  Copyright (C) 2007-2011 Lawrence Livermore National Security, LLC.
+ *  Copyright (C) 2007-2016 Lawrence Livermore National Security, LLC.
  *  Copyright (C) 2001-2007 The Regents of the University of California.
  *  UCRL-CODE-2002-009.
  *
  *  This file is part of ConMan: The Console Manager.
- *  For details, see <http://conman.googlecode.com/>.
+ *  For details, see <https://dun.github.io/conman/>.
  *
  *  ConMan is free software: you can redistribute it and/or modify it under
  *  the terms of the GNU General Public License as published by the Free
@@ -31,6 +29,8 @@
 #include <arpa/telnet.h>
 #include <assert.h>
 #include <errno.h>
+#include <fcntl.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -38,9 +38,12 @@
 #include "list.h"
 #include "log.h"
 #include "server.h"
+#include "tpoll.h"
 #include "util-str.h"
 #include "util.h"
 #include "wrapper.h"
+
+extern tpoll_t tp_global;               /* defined in server.c */
 
 
 static void perform_serial_break(obj_t *client);
@@ -49,6 +52,7 @@ static void perform_console_writer_linkage(obj_t *client);
 static void perform_log_replay(obj_t *client);
 static void perform_quiet_toggle(obj_t *client);
 static void perform_reset(obj_t *client);
+static void kill_reset_cmd(obj_t *console);
 static void perform_suspend(obj_t *client);
 
 
@@ -262,14 +266,14 @@ static void perform_log_replay(obj_t *client)
  *    with this client (in either a R/O or R/W session, but not a B/C session).
  *
  *  The maximum amount of data that can be written into an object's
- *    circular-buffer via write_obj_data() is (MAX_BUF_SIZE - 1) bytes.
+ *    circular-buffer via write_obj_data() is (OBJ_BUF_SIZE - 1) bytes.
  *    But writing this much data may likely overwrite data in the buffer that
  *    has not been flushed to the object's file descriptor via write_to_obj().
- *    Therefore, it is recommended (CONMAN_REPLAY_LEN <= MAX_BUF_SIZE / 2).
+ *    Therefore, it is recommended (LOG_REPLAY_LEN <= OBJ_BUF_SIZE / 2).
  */
     obj_t *console;
     obj_t *logfile;
-    unsigned char buf[MAX_BUF_SIZE - 1];
+    unsigned char buf[OBJ_BUF_SIZE - 1];
     unsigned char *ptr = buf;
     int len = sizeof(buf);
     unsigned char *p;
@@ -290,54 +294,78 @@ static void perform_log_replay(obj_t *client)
     logfile = get_console_logfile_obj(console);
 
     if (!logfile) {
+        assert(len > 0);
         n = snprintf((char *) ptr, len,
             "%sConsole [%s] is not being logged -- cannot replay%s",
             CONMAN_MSG_PREFIX, console->name, CONMAN_MSG_SUFFIX);
         if ((n < 0) || (n >= len)) {
             log_msg(LOG_WARNING,
-                "Insufficient buffer to write message to console %s log",
+                "Insufficient buffer to write message to console [%s] log",
                 console->name);
             return;
         }
         ptr += n;
+        len -= n;
     }
     else {
         assert(is_logfile_obj(logfile));
+        assert(len > 0);
         n = snprintf((char *) ptr, len, "%sBegin log replay of console [%s]%s",
             CONMAN_MSG_PREFIX, console->name, CONMAN_MSG_SUFFIX);
-        if ((n < 0) || (n >= len) || (sizeof(buf) <= 2*n - 2)) {
+        if ((n < 0) || (n >= len)) {
             log_msg(LOG_WARNING,
-                "Insufficient buffer to replay console %s log for %s",
+                "Insufficient buffer to replay console [%s] log for <%s>",
                 console->name, client->name);
             return;
         }
         ptr += n;
+        len -= n;
         /*
-         *  Since we now know the length of the "begin" message, reserve
-         *    space in 'buf' for the "end" message by doubling its length.
+         *  Reserve space in 'buf' for the "End log replay" message
+         *    (which is 2 bytes less than the "Begin log replay" message).
          */
-        len -= 2*n - 2;
-
+        len -= n - 2;
+        if (len <= 0) {
+            log_msg(LOG_WARNING,
+                "Insufficient buffer to replay console [%s] log for <%s>",
+                console->name, client->name);
+            return;
+        }
         x_pthread_mutex_lock(&logfile->bufLock);
 
         /*  Compute the number of bytes to replay.
          *  If the console's circular-buffer has not yet wrapped around,
          *    don't wrap back into uncharted buffer territory.
+         *  The result is bounded by the value of LOG_REPLAY_LEN and the
+         *    amount of buffer space remaining in 'buf'.
          */
-        if (!logfile->gotBufWrap)
-            n = MIN(CONMAN_REPLAY_LEN, logfile->bufInPtr - logfile->buf);
-        else
-            n = MIN(CONMAN_REPLAY_LEN, MAX_BUF_SIZE - 1);
-        n = MIN(n, len);
+        if (!logfile->gotBufWrap) {
+            n = logfile->bufInPtr - logfile->buf;
+        }
+        else {
+            n = OBJ_BUF_SIZE - 1;
+        }
+        if (n < 0) {
+            n = 0;
+        }
+        if (n > LOG_REPLAY_LEN) {
+            n = LOG_REPLAY_LEN;
+        }
+        if (n > len) {
+            n = len;
+        }
 
         p = logfile->bufInPtr - n;
         if (p >= logfile->buf) {        /* no wrap needed */
+            assert(n > 0);
             memcpy(ptr, p, n);
             ptr += n;
         }
         else {                          /* wrap backwards */
             m = logfile->buf - p;
-            p = &logfile->buf[MAX_BUF_SIZE] - m;
+            assert(m > 0);
+            assert(m <= n);
+            p = &logfile->buf[OBJ_BUF_SIZE] - m;
             memcpy(ptr, p, m);
             ptr += m;
             n -= m;
@@ -347,10 +375,10 @@ static void perform_log_replay(obj_t *client)
 
         x_pthread_mutex_unlock(&logfile->bufLock);
 
-        /*  Must recompute 'len' since we already subtracted space reserved
-         *    for this string.  We could get away with just sprintf() here.
+        /*  Recompute 'len' since space was already reserved for it above.
          */
         len = &buf[sizeof(buf)] - ptr;
+        assert(len > 0);
         n = snprintf((char *) ptr, len, "%sEnd log replay of console [%s]%s",
             CONMAN_MSG_PREFIX, console->name, CONMAN_MSG_SUFFIX);
         assert((n >= 0) && (n < len));
@@ -396,40 +424,128 @@ static void perform_quiet_toggle(obj_t *client)
 static void perform_reset(obj_t *client)
 {
 /*  Resets all consoles for which this client has write-access.
- *
- *  Actually, this routine cannot perform the reset command because
- *    the command string is stored within the server_conf struct.
- *    Therefore, this routine sets a reset flag for each affected
- *    console.  And mux_io() will do the dirty deed when we return.
  */
+    int dev_null;
     ListIterator i;
     obj_t *console;
-    char *tty;
-    char *now;
-    char buf[MAX_LINE];
+    char cmd[MAX_LINE];
 
     assert(is_client_obj(client));
 
-    tty = client->aux.client.req->tty;
-    now = create_short_time_string(0);
+    dev_null = open("/dev/null", O_RDWR);
+    if (dev_null < 0) {
+        log_msg(LOG_WARNING,
+            "Unable to open \"/dev/null\" for console reset: %s",
+            strerror(errno));
+    }
+
     i = list_iterator_create(client->readers);
     while ((console = list_next(i))) {
+
         assert(is_console_obj(console));
-        if (console->gotReset)          /* prior reset not yet processed */
+
+        if (console->resetCmdRef == NULL) {
             continue;
-        console->gotReset = 1;
-        log_msg(LOG_NOTICE, "Console [%s] reset by <%s@%s>", console->name,
-            client->aux.client.req->user, client->aux.client.req->host);
-        snprintf(buf, sizeof(buf),
-            "%sConsole [%s] reset by <%s@%s>%s%s at %s%s",
-            CONMAN_MSG_PREFIX, console->name,
-            client->aux.client.req->user, client->aux.client.req->host,
-            (tty ? " on " : ""), (tty ? tty : ""), now, CONMAN_MSG_SUFFIX);
-        strcpy(&buf[sizeof(buf) - 3], "\r\n");
-        notify_console_objs(console, buf);
+        }
+        if (console->resetCmdPid > 0) {
+            write_notify_msg(console, LOG_INFO,
+                "Ignoring reset of console [%s]: pid %d still active",
+                console->name, (int) console->resetCmdPid);
+            continue;
+        }
+        if (format_obj_string(
+                cmd, sizeof(cmd), console, console->resetCmdRef) < 0) {
+            write_notify_msg(console, LOG_WARNING,
+                "Unable to reset console [%s]: command too long",
+                console->name);
+            continue;
+        }
+        console->resetCmdPid = fork();
+        if (console->resetCmdPid < 0) {
+            write_notify_msg(console, LOG_WARNING,
+                "Unable to reset console [%s]: fork failed: %s",
+                console->name, strerror(errno));
+            continue;
+        }
+        else if (console->resetCmdPid == 0) {
+            setpgid(console->resetCmdPid, 0);
+            if (dev_null < 0) {
+                (void) close(STDIN_FILENO);
+                (void) close(STDOUT_FILENO);
+                (void) close(STDERR_FILENO);
+            }
+            else {
+                (void) dup2(dev_null, STDIN_FILENO);
+                (void) dup2(dev_null, STDOUT_FILENO);
+                (void) dup2(dev_null, STDERR_FILENO);
+                if (dev_null > STDERR_FILENO) {
+                    (void) close(dev_null);
+                }
+            }
+            execl("/bin/sh", "sh", "-c", cmd, (char *) NULL);
+            _exit(127);                 /* execl() error */
+        }
+        /*  Both parent and child call setpgid() to make the child a process
+         *    group leader.  One of these calls is redundant, but by doing
+         *    both we avoid a race condition.  (cf. APUE 9.4 p244)
+         */
+        setpgid(console->resetCmdPid, 0);
+
+        write_notify_msg(console, LOG_NOTICE,
+            "Console [%s] reset by <%s@%s> (pid %d)",
+            console->name, client->aux.client.req->user,
+            client->aux.client.req->host, (int) console->resetCmdPid);
+
+        /*  Set a timer to ensure the reset cmd does not exceed its time limit.
+         */
+        console->resetCmdTimer = tpoll_timeout_relative(tp_global,
+            (callback_f) kill_reset_cmd, console, RESET_CMD_TIMEOUT * 1000);
+        if (console->resetCmdTimer < 0) {
+            write_notify_msg(console, LOG_WARNING,
+                "Unable to create timer for reset of console [%s]: %s",
+                console->name, strerror(errno));
+        }
     }
     list_iterator_destroy(i);
-    free(now);
+
+    if ((dev_null >= 0) && (close(dev_null) < 0)) {
+        log_msg(LOG_WARNING,
+            "Unable to close \"/dev/null\" for console reset: %s",
+            strerror(errno));
+    }
+    return;
+}
+
+
+static void kill_reset_cmd(obj_t *console)
+{
+/*  Terminates the "ResetCmd" process associated with 'console' if it has
+ *    exceeded its time limit.
+ */
+    pid_t pid;
+
+    assert(console != NULL);
+
+    pid = console->resetCmdPid;
+    console->resetCmdPid = 0;
+    console->resetCmdTimer = 0;
+
+    if (pid <= 0) {
+        return;
+    }
+    if (kill(pid, 0) < 0) {             /* process is no longer running */
+        return;
+    }
+    if (kill(-pid, SIGKILL) == 0) {     /* kill entire process group */
+        log_msg(LOG_NOTICE,
+            "Console [%s] reset terminated after %ds (pid %d)",
+            console->name, RESET_CMD_TIMEOUT, (int) pid);
+    }
+    else {
+        log_msg(LOG_WARNING,
+            "Unable to terminate console [%s] reset after %ds (pid %d): %s",
+            console->name, RESET_CMD_TIMEOUT, (int) pid, strerror(errno));
+    }
     return;
 }
 
@@ -441,16 +557,21 @@ static void perform_suspend(obj_t *client)
  *    into its circular-buffer; if the client does not resume before
  *    the buffer wraps around, data will be lost.
  */
-    int gotSuspend;
-
     assert(is_client_obj(client));
 
-    gotSuspend = client->aux.client.gotSuspend ^= 1;
-    /*
-     *  FIXME: Do check_console_state() here looking for downed telnets.
+    client->aux.client.gotSuspend ^= 1;
+
+    if (client->aux.client.gotSuspend) {
+        tpoll_clear(tp_global, client->fd, POLLOUT);
+    }
+    else {
+        tpoll_set(tp_global, client->fd, POLLOUT);
+    }
+
+    /*  FIXME: Do check_console_state() here looking for downed telnets.
      *    Should it check the state of all readers & writers?
      */
-    DPRINTF((5, "%s output to client [%s].\n",
-        (gotSuspend ? "Suspending" : "Resuming"), client->name));
+    log_msg(LOG_INFO, "Client <%s> %s", client->name,
+        (client->aux.client.gotSuspend ? "suspended" : "resumed"));
     return;
 }

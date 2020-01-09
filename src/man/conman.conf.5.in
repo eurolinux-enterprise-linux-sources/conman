@@ -1,5 +1,3 @@
-.\" $Id: conman.conf.5.in 1059 2011-04-21 00:20:12Z chris.m.dunlap $
-
 .TH CONMAN.CONF 5 "@DATE@" "@PROJECT@-@VERSION@" "ConMan: The Console Manager"
 
 .SH NAME
@@ -59,12 +57,18 @@ with the \fBsyslog\fR keyword, messages will be sent to both locations.
 \fBloopback\fR \fB=\fR (\fBon\fR|\fBoff\fR)
 Specifies whether the daemon will bind its socket to the loopback address,
 thereby only accepting local client connections directed to that address
-(127.0.0.1).  The default is \fBoff\fR.
+(127.0.0.1).  The default is \fBon\fR.
+.TP
+\fBnofile\fR \fB=\fR \fIinteger\fR
+Specifies the maximum number of open files for the daemon.  If set to 0, use
+the current (soft) limit.  If set to \-1, use the the maximum (hard) limit.
+The default is 0.
 .TP
 \fBpidfile\fR \fB=\fR "\fIfile\fR"
 Specifies the file to which the daemon's PID is written.  Intermediate
 directories will be created as needed.  The use of a pidfile is recommended
-if you want to use the daemon's '\fB-k\fR', '\fB-q\fR', or '\fB-r\fR' options.
+if you want to use the daemon's '\fB\-k\fR', '\fB\-q\fR', or '\fB\-r\fR'
+options.
 .TP
 \fBport\fR \fB=\fR \fIinteger\fR
 Specifies the port on which the daemon will listen for client connections.
@@ -85,7 +89,7 @@ list of facilities.  If this keyword is used in conjunction with the
 \fBtcpwrappers\fR \fB=\fR (\fBon\fR|\fBoff\fR)
 Specifies whether the daemon will use TCP-Wrappers when accepting client
 connections.  Support for this feature must be enabled at compile-time (via
-configure's "--with-tcp-wrappers" option).  Refer to \fBhosts_access(5)\fR
+configure's "\-\-with\-tcp\-wrappers" option).  Refer to \fBhosts_access(5)\fR
 and \fBhosts_options(5)\fR for more details.  The default is \fBoff\fR.
 .TP
 \fBtimestamp\fR \fB=\fR \fIinteger\fB (\fBm\fR|\fBh\fR|\fBd\fR)
@@ -123,7 +127,7 @@ characters into 7-bit printable characters.
 .br
 .sp
 \fBtimestamp\fR or \fBnotimestamp\fR - timestamped logs prepend each line
-of console output with a timestamp in "YYYY-MM-DD HH:MM:SS" format.  This
+of console output with a timestamp in "YYYY\-MM\-DD HH:MM:SS" format.  This
 timestamp is generated when the first character following the line break is
 output.
 .br
@@ -157,7 +161,7 @@ The default is "9600,8n1" for 9600 bps, 8 data bits, no parity, and 1 stop bit.
 Specifies global options for IPMI Serial-Over-LAN devices.  These options can
 be overridden on a per-console basis by specifying the \fBCONSOLE\fR
 \fBIPMIOPTS\fR keyword.  This directive is only available if configured using
-the "--with-freeipmi" option.
+the "\-\-with\-freeipmi" option.
 .br
 .sp
 The \fBIPMIOPTS\fR string is parsed into comma-delimited substrings where each
@@ -172,28 +176,28 @@ delimited by commas, substring values cannot contain commas.
 The valid \fBIPMIOPTS\fR substrings include the following (in any order):
 .br
 .sp
-\fBU\fR:\fIusername\fR - a string of at most 16 bytes for the username with
-which to authenticate to the BMCs serving the remote consoles.
+\fBU\fR:\fIusername\fR - a string of at most 16 bytes for the username.
 .br
 .sp
-\fBP\fR:\fIpassword\fR - a string of at most 20 bytes for the password with
-which to authenticate to the BMCs serving the remote consoles.
+\fBP\fR:\fIpassword\fR - a string of at most 20 bytes for the password.
 .br
 .sp
-\fBK\fR:\fIK_g\fR - a string of at most 20 bytes for the K_g key with which
-to authenticate to the BMCs serving the remote consoles.
+\fBK\fR:\fIK_g\fR - a string of at most 20 bytes for the K_g key.
 .br
 .sp
 \fBC\fR:\fIcipher_suite\fR - an integer for the IPMI cipher suite ID.
-Refer to \fBipmiconsole(8)\fR for a list of currently supported IDs.
+Refer to \fBipmiconsole(8)\fR for a list of supported IDs.
 .br
 .sp
 \fBL\fR:\fIprivilege_level\fR - the string "user", "op", or "admin".
 .br
 .sp
 \fBW\fR:\fIworkaround_flag\fR - a string or integer for an IPMI workaround.
-Refer to \fBipmiconsole(8)\fR for a list of currently supported flags.
-This substring may be repeated to specify multiple workaround flags.
+The following strings are recognized: "authcap", "intel20", "supermicro20",
+"sun20", "opensesspriv", "integritycheckvalue", "solpayloadsize", "solport",
+and "solstatus".  Refer to \fBipmiconsole(8)\fR for more information on
+these workarounds.  This substring may be repeated in order to specify
+multiple workarounds.
 .br
 .sp
 Both the \fIpassword\fR and \fIK_g\fR values can be specified in either ASCII
@@ -307,6 +311,10 @@ The console name (\fB%N\fR) and device (\fB%D\fR) specifiers are "sanitized"
 in that non-printable characters and the forward-slash (/) character are
 replaced with underscores.
 
+Conversion specifiers within console log filenames are evaluated when the file
+is opened; this occurs when \fBconmand\fR first starts and whenever it receives
+a \fBSIGHUP\fR.
+
 .SH FILES
 .I @CONMAN_CONF@
 
@@ -314,10 +322,11 @@ replaced with underscores.
 Chris Dunlap <cdunlap@llnl.gov>
 
 .SH COPYRIGHT
-Copyright (C) 2007-2011 Lawrence Livermore National Security, LLC.
+Copyright (C) 2007-2016 Lawrence Livermore National Security, LLC.
 .br
 Copyright (C) 2001-2007 The Regents of the University of California.
 
+.SH LICENSE
 ConMan is free software: you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free
 Software Foundation, either version 3 of the License, or (at your option)
@@ -327,4 +336,4 @@ any later version.
 .BR conman (1),
 .BR conmand (8).
 .PP
-\fBhttp://conman.googlecode.com/\fR
+\fBhttps://dun.github.io/conman/\fR

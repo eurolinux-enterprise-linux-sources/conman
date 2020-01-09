@@ -1,13 +1,11 @@
 /*****************************************************************************
- *  $Id: server-telnet.c 1037 2011-04-07 20:02:56Z chris.m.dunlap $
- *****************************************************************************
  *  Written by Chris Dunlap <cdunlap@llnl.gov>.
- *  Copyright (C) 2007-2011 Lawrence Livermore National Security, LLC.
+ *  Copyright (C) 2007-2016 Lawrence Livermore National Security, LLC.
  *  Copyright (C) 2001-2007 The Regents of the University of California.
  *  UCRL-CODE-2002-009.
  *
  *  This file is part of ConMan: The Console Manager.
- *  For details, see <http://conman.googlecode.com/>.
+ *  For details, see <https://dun.github.io/conman/>.
  *
  *  ConMan is free software: you can redistribute it and/or modify it under
  *  the terms of the GNU General Public License as published by the Free
@@ -109,8 +107,10 @@ obj_t * create_telnet_obj(server_conf_t *conf, char *name,
     assert((host != NULL) && (host[0] != '\0'));
 
     if (port <= 0) {
-        snprintf(errbuf, errlen,
-            "console [%s] specifies invalid port \"%d\"", name, port);
+        if ((errbuf != NULL) && (errlen > 0)) {
+            snprintf(errbuf, errlen,
+                "console [%s] specifies invalid port \"%d\"", name, port);
+        }
         return(NULL);
     }
     /*  Check for duplicate console names.
@@ -118,8 +118,10 @@ obj_t * create_telnet_obj(server_conf_t *conf, char *name,
     i = list_iterator_create(conf->objs);
     while ((telnet = list_next(i))) {
         if (is_console_obj(telnet) && !strcmp(telnet->name, name)) {
-            snprintf(errbuf, errlen,
-                "console [%s] specifies duplicate console name", name);
+            if ((errbuf != NULL) && (errlen > 0)) {
+                snprintf(errbuf, errlen,
+                    "console [%s] specifies duplicate console name", name);
+            }
             break;
         }
     }
@@ -224,6 +226,7 @@ static int connect_telnet_obj(obj_t *telnet)
                 (struct sockaddr *) &saddr, sizeof(saddr)) < 0) {
             if (errno == EINPROGRESS) {
                 telnet->aux.telnet.state = CONMAN_TELNET_PENDING;
+                tpoll_set(tp_global, telnet->fd, POLLIN | POLLOUT);
             }
             else {
                 disconnect_telnet_obj(telnet);
@@ -250,16 +253,12 @@ static int connect_telnet_obj(obj_t *telnet)
             err = errno;
         }
         if (err) {
-            /*
-             *  On some systems (eg, Tru64), the close() of a socket
-             *    that failed to connect() will return with an error of
-             *    "invalid argument".  So close & ignore the return code here.
-             */
-            (void) close(telnet->fd);
-            telnet->fd = -1;
             disconnect_telnet_obj(telnet);
             return(-1);
         }
+        tpoll_clear(tp_global, telnet->fd, POLLOUT);
+        DPRINTF((10, "Completing connection to <%s:%d> for [%s].\n",
+            telnet->aux.telnet.host, telnet->aux.telnet.port, telnet->name));
     }
     else {
         log_err(0, "Console [%s] is in unexpected telnet state=%d",
@@ -267,6 +266,7 @@ static int connect_telnet_obj(obj_t *telnet)
     }
     telnet->gotEOF = 0;
     telnet->aux.telnet.state = CONMAN_TELNET_UP;
+    tpoll_set(tp_global, telnet->fd, POLLIN);
 
     /*  Notify linked objs when transitioning into an UP state.
      */
@@ -284,8 +284,11 @@ static int connect_telnet_obj(obj_t *telnet)
     telnet->aux.telnet.timer = tpoll_timeout_relative(tp_global,
         (callback_f) reset_telnet_delay, telnet, TELNET_MIN_TIMEOUT * 1000);
 
-    send_telnet_cmd(telnet, DO, TELOPT_SGA);
+    send_telnet_cmd(telnet, DO, TELOPT_BINARY);
     send_telnet_cmd(telnet, DO, TELOPT_ECHO);
+    send_telnet_cmd(telnet, DO, TELOPT_SGA);
+    send_telnet_cmd(telnet, WILL, TELOPT_BINARY);
+    send_telnet_cmd(telnet, WILL, TELOPT_SGA);
 
     return(0);
 }
@@ -304,8 +307,9 @@ static void disconnect_telnet_obj(obj_t *telnet)
         telnet->aux.telnet.timer = -1;
     }
     if (telnet->fd >= 0) {
+        tpoll_clear(tp_global, telnet->fd, POLLIN | POLLOUT);
         if (close(telnet->fd) < 0)
-            log_msg(LOG_ERR,
+            log_msg(LOG_WARNING,
                 "Unable to close connection to <%s:%d> for [%s]: %s",
                 telnet->aux.telnet.host, telnet->aux.telnet.port,
                 telnet->name, strerror(errno));
@@ -314,7 +318,7 @@ static void disconnect_telnet_obj(obj_t *telnet)
     /*  Notify linked objs when transitioning from an UP state.
      */
     if (telnet->aux.telnet.state == CONMAN_TELNET_UP) {
-        write_notify_msg(telnet, LOG_NOTICE,
+        write_notify_msg(telnet, LOG_INFO,
             "Console [%s] disconnected from <%s:%d>",
             telnet->name, telnet->aux.telnet.host, telnet->aux.telnet.port);
     }
@@ -480,14 +484,11 @@ int send_telnet_cmd(obj_t *telnet, int cmd, int opt)
         *p++ = opt;
     }
 
-    assert((p > buf) && ((p - buf) <= sizeof(buf)));
+    assert((p > buf) && ((size_t) (p - buf) <= sizeof(buf)));
     if (write_obj_data(telnet, buf, p - buf, 0) <= 0)
         return(-1);
 
-    /*  Suppress unused variable warning.
-     */
-    opt_buf[0] = '\0';
-
+    (void) opt_buf;                     /* suppress unused-variable warning */
     DPRINTF((10, "Sent telnet cmd %s %s to console [%s].\n",
         telcmds[cmd - TELCMD_FIRST],
         (TELOPT_OK(opt)
@@ -501,7 +502,6 @@ int send_telnet_cmd(obj_t *telnet, int cmd, int opt)
 static int process_telnet_cmd(obj_t *telnet, int cmd, int opt)
 {
 /*  Processes the given telnet cmd received from the (telnet) console.
- *  Telnet option negotiation is performed using the Q-Method (rfc1143).
  *  Returns 0 if the command is valid, or -1 on error.
  */
     char opt_buf[OPTBUFLEN];
@@ -539,16 +539,33 @@ static int process_telnet_cmd(obj_t *telnet, int cmd, int opt)
 
     switch(cmd) {
     case DONT:
-        /* fall-thru */
+        break;
     case DO:
-        if ((opt != TELOPT_ECHO) && (opt != TELOPT_SGA))
+        if (    (opt != TELOPT_BINARY) &&
+                (opt != TELOPT_SGA))
+        {
             send_telnet_cmd(telnet, WONT, opt);
+        }
         break;
     case WONT:
-        /* fall-thru */
+        if (    (opt == TELOPT_BINARY) ||
+                (opt == TELOPT_ECHO)   ||
+                (opt == TELOPT_SGA))
+        {
+            log_msg(LOG_NOTICE,
+                "Received telnet cmd %s %s from console [%s]",
+                telcmds[cmd - TELCMD_FIRST],
+                telopts[opt - TELOPT_FIRST],
+                telnet->name);
+        }
+        break;
     case WILL:
-        if ((opt != TELOPT_ECHO) && (opt != TELOPT_SGA))
+        if (    (opt != TELOPT_BINARY) &&
+                (opt != TELOPT_ECHO)   &&
+                (opt != TELOPT_SGA))
+        {
             send_telnet_cmd(telnet, DONT, opt);
+        }
         break;
     default:
         log_msg(LOG_INFO, "Ignoring telnet cmd %s %s from console [%s]",
@@ -565,6 +582,8 @@ static int process_telnet_cmd(obj_t *telnet, int cmd, int opt)
 
 static char * opt2str(int opt, char *buf, int buflen)
 {
-    snprintf(buf, buflen, "OPT:%d", opt);
+    if ((buf != NULL) && (buflen > 0)) {
+        snprintf(buf, buflen, "OPT:%d", opt);
+    }
     return(buf);
 }

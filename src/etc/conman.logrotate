@@ -1,8 +1,6 @@
 ##
 # ConMan Logrotate Configuration
 ##
-# $Id: conman.logrotate 500 2005-02-10 02:19:46Z dun $
-##
 
 ##
 # Example logrotate entry for ConMan.

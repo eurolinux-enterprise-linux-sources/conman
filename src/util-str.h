@@ -1,13 +1,11 @@
 /*****************************************************************************
- *  $Id: util-str.h 1033 2011-04-06 21:53:48Z chris.m.dunlap $
- *****************************************************************************
  *  Written by Chris Dunlap <cdunlap@llnl.gov>.
- *  Copyright (C) 2007-2011 Lawrence Livermore National Security, LLC.
+ *  Copyright (C) 2007-2016 Lawrence Livermore National Security, LLC.
  *  Copyright (C) 2001-2007 The Regents of the University of California.
  *  UCRL-CODE-2002-009.
  *
  *  This file is part of ConMan: The Console Manager.
- *  For details, see <http://conman.googlecode.com/>.
+ *  For details, see <https://dun.github.io/conman/>.
  *
  *  ConMan is free software: you can redistribute it and/or modify it under
  *  the terms of the GNU General Public License as published by the Free
@@ -82,10 +80,11 @@ int parse_string(char *src, char **dst_p, char **ptr_p, char *quote_p);
  *  Note that (src) is modified by this routine!
  */
 
-size_t append_format_string(char *dst, size_t size, const char *fmt, ...);
+int append_format_string(char *dst, size_t size, const char *fmt, ...);
 /*
  *  Appends the string specified by the format-string (fmt) to a
  *    NUL-terminated string (dst) within a buffer of size (size).
+ *    If (size) > 0, (dst) will be NUL-terminated upon return.
  *  Note that (size) is the full size of (dst), not the space remaining.
  *  Returns the new length of the NUL-terminated string (dst),
  *    or -1 if truncation occurred.

@@ -1,13 +1,11 @@
 /*****************************************************************************
- *  $Id: util-file.c 1033 2011-04-06 21:53:48Z chris.m.dunlap $
- *****************************************************************************
  *  Written by Chris Dunlap <cdunlap@llnl.gov>.
- *  Copyright (C) 2007-2011 Lawrence Livermore National Security, LLC.
+ *  Copyright (C) 2007-2016 Lawrence Livermore National Security, LLC.
  *  Copyright (C) 2001-2007 The Regents of the University of California.
  *  UCRL-CODE-2002-009.
  *
  *  This file is part of ConMan: The Console Manager.
- *  For details, see <http://conman.googlecode.com/>.
+ *  For details, see <https://dun.github.io/conman/>.
  *
  *  ConMan is free software: you can redistribute it and/or modify it under
  *  the terms of the GNU General Public License as published by the Free
@@ -209,20 +207,29 @@ ssize_t write_n(int fd, void *buf, size_t n)
 
 ssize_t read_line(int fd, void *buf, size_t maxlen)
 {
-    ssize_t n, rc;
+    size_t n;
+    ssize_t rv;
     unsigned char c, *p;
 
+    if (buf == NULL) {
+        errno = EINVAL;
+        return(-1);
+    }
+    if (maxlen == 0) {
+        return(0);
+    }
+    maxlen--;                           /* reserve space for NUL-termination */
     n = 0;
     p = buf;
-    while (n < maxlen - 1) {            /* reserve space for NUL-termination */
-
-        if ((rc = read(fd, &c, 1)) == 1) {
+    while (n < maxlen) {
+        rv = read(fd, &c, sizeof(c));
+        if (rv == 1) {
             n++;
             *p++ = c;
             if (c == '\n')
                 break;                  /* store newline, like fgets() */
         }
-        else if (rc == 0) {
+        else if (rv == 0) {
             if (n == 0)                 /* EOF, no data read */
                 return(0);
             else                        /* EOF, some data read */
@@ -236,7 +243,7 @@ ssize_t read_line(int fd, void *buf, size_t maxlen)
     }
 
     *p = '\0';                          /* NUL-terminate, like fgets() */
-    return(n);
+    return((ssize_t) n);
 }
 
 
@@ -244,7 +251,7 @@ char *
 get_dir_name (const char *srcpath, char *dstdir, size_t dstdirlen)
 {
     const char *p;
-    int         len;
+    size_t      len;
 
     if ((srcpath == NULL) || (dstdir == NULL)) {
         errno = EINVAL;
@@ -280,11 +287,11 @@ get_dir_name (const char *srcpath, char *dstdir, size_t dstdirlen)
     /*  Otherwise, copy the directory string into dstdir.
      */
     else {
-        len = p - srcpath + 1;
-
-        /*  Protect against integer overflows and buffer overruns.
+        /*  'p' now points at the last char to copy, so +1 to include that
+         *    last char, then add the terminating null char afterwards.
          */
-        if ((len <= 0) || (len >= dstdirlen)) {
+        len = p - srcpath + 1;
+        if (len >= dstdirlen) {
             errno = ENAMETOOLONG;
             return (NULL);
         }

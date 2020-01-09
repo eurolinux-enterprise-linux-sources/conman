@@ -1,13 +1,11 @@
 /*****************************************************************************
- *  $Id: server-obj.c 1033 2011-04-06 21:53:48Z chris.m.dunlap $
- *****************************************************************************
  *  Written by Chris Dunlap <cdunlap@llnl.gov>.
- *  Copyright (C) 2007-2011 Lawrence Livermore National Security, LLC.
+ *  Copyright (C) 2007-2016 Lawrence Livermore National Security, LLC.
  *  Copyright (C) 2001-2007 The Regents of the University of California.
  *  UCRL-CODE-2002-009.
  *
  *  This file is part of ConMan: The Console Manager.
- *  For details, see <http://conman.googlecode.com/>.
+ *  For details, see <https://dun.github.io/conman/>.
  *
  *  ConMan is free software: you can redistribute it and/or modify it under
  *  the terms of the GNU General Public License as published by the Free
@@ -39,6 +37,7 @@
 #include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/uio.h>
 #include <time.h>
 #include <unistd.h>
 #include "common.h"
@@ -46,10 +45,13 @@
 #include "list.h"
 #include "log.h"
 #include "server.h"
+#include "tpoll.h"
 #include "util-file.h"
 #include "util-str.h"
 #include "util.h"
 #include "wrapper.h"
+
+extern tpoll_t tp_global;               /* defined in server.c */
 
 
 static char * sanitize_file_string(char *str);
@@ -57,6 +59,7 @@ static char * find_trailing_int_str(char *str);
 #ifndef NDEBUG
 static int validate_obj_links(obj_t *obj);
 #endif /* !NDEBUG */
+static int num_bytes_buffered(obj_t *obj);
 
 
 obj_t * create_obj(
@@ -77,18 +80,19 @@ obj_t * create_obj(
     x_pthread_mutex_init(&obj->bufLock, NULL);
     obj->readers = list_create(NULL);
     obj->writers = list_create(NULL);
-    if ((type < 0) || (type >= CONMAN_OBJ_LAST_ENTRY)) {
+    if ((type == 0) || (type >= CONMAN_OBJ_LAST_ENTRY)) {
         log_err(0, "INTERNAL: Unrecognized object [%s] type=%d", name, type);
     }
     obj->type = type;
     obj->gotBufWrap = 0;
     obj->gotEOF = 0;
     /*
-     *  The gotReset flag only applies to "console" objs.
-     *  But the code is simplified if it is placed in the base obj.
-     *  Besides, the base obj remains the same size due to the bitfields.
+     *  resetCmdRef, resetCmdPid, and resetCmdTimer only apply to console objs.
+     *  But the code is simplified if they are placed in the base obj.
      */
-    obj->gotReset = 0;
+    obj->resetCmdRef = NULL;
+    obj->resetCmdPid = 0;
+    obj->resetCmdTimer = 0;
 
     DPRINTF((10, "Created object [%s].\n", obj->name));
     return(obj);
@@ -112,6 +116,7 @@ obj_t * create_client_obj(server_conf_t *conf, req_t *req)
 
     set_fd_nonblocking(req->sd);
     set_fd_closed_on_exec(req->sd);
+    tpoll_set(tp_global, req->sd, POLLIN);
 
     snprintf(name, sizeof(name), "%s@%s:%d", req->user, req->host, req->port);
     name[sizeof(name) - 1] = '\0';
@@ -139,28 +144,34 @@ void destroy_obj(obj_t *obj)
  *  This routine should only be called via the obj's list destructor, thereby
  *    ensuring it will be removed from the master objs list before destruction.
  */
+    int n;
     char **pp;
 
     assert(obj != NULL);
     DPRINTF((10, "Destroying object [%s].\n", obj->name));
 
-/*  FIXME? Ensure obj buf is flushed (if not suspended) before destruction.
- *
- *  assert(obj->bufInPtr == obj->bufOutPtr);
- */
+    n = num_bytes_buffered(obj);
+    if (n > 0) {
+        log_msg(LOG_WARNING,
+            "Destroying [%s] with %d byte%s of unwritten data",
+            obj->name, n, (n == 1 ? "" : "s"));
+    }
+
     switch(obj->type) {
     case CONMAN_OBJ_CLIENT:
         if (obj->aux.client.req) {
-            /*
-             *  Prevent destroy_req() from closing 'sd' a second time.
-             */
-            obj->aux.client.req->sd = -1;
-            destroy_req(obj->aux.client.req);
+            req_t *req = obj->aux.client.req;
+            log_msg(LOG_INFO, "Client <%s@%s:%d> disconnected",
+                req->user, req->fqdn, req->port);
+            req->sd = -1;       /* prevent destroy_req from also closing sd */
+            destroy_req(req);
+            obj->aux.client.req = NULL;
         }
         break;
     case CONMAN_OBJ_LOGFILE:
-        if (obj->aux.logfile.fmtName)
+        if (obj->aux.logfile.fmtName) {
             free(obj->aux.logfile.fmtName);
+        }
         break;
     case CONMAN_OBJ_PROCESS:
         for (pp = obj->aux.process.argv; *pp != NULL; pp++) {
@@ -218,6 +229,8 @@ void destroy_obj(obj_t *obj)
         x_pthread_mutex_destroy(&obj->aux.ipmi.mutex);
         break;
 #endif /* WITH_FREEIPMI */
+    case CONMAN_OBJ_TEST:
+        break;
     default:
         log_err(0, "INTERNAL: Unrecognized object [%s] type=%d",
             obj->name, obj->type);
@@ -232,8 +245,11 @@ void destroy_obj(obj_t *obj)
         list_destroy(obj->writers);
     }
     if (obj->fd >= 0) {
-        if (close(obj->fd) < 0)
-            log_err(errno, "Unable to close object [%s]", obj->name);
+        tpoll_clear(tp_global, obj->fd, POLLIN | POLLOUT);
+        if (close(obj->fd) < 0) {
+            log_msg(LOG_WARNING, "Unable to close [%s] during destruction: %s",
+                obj->name, strerror(errno));
+        }
         obj->fd = -1;
     }
     if (obj->name) {
@@ -271,6 +287,9 @@ void reopen_obj(obj_t *obj)
     else if (is_client_obj(obj)) {
         ; /* no-op */
     }
+    else if (is_test_obj(obj)) {
+        open_test_obj(obj);
+    }
     else {
         log_err(0, "INTERNAL: Cannot re-open unrecognized object [%s] type=%d",
             obj->name, obj->type);
@@ -299,6 +318,9 @@ int format_obj_string(char *buf, int buflen, obj_t *obj, const char *fmt)
     assert (buf != NULL);
     assert (fmt != NULL);
 
+    if ((buf == NULL) || (fmt == NULL)) {
+        return(-1);
+    }
     psrc = fmt;
     pdst = buf;
     n = buflen;
@@ -341,6 +363,7 @@ int format_obj_string(char *buf, int buflen, obj_t *obj, const char *fmt)
                     }
                 }
                 else if (is_telnet_obj(obj)) {
+                    assert(n > 0);
                     m = snprintf (pdst, n, "%s:%d",
                         obj->aux.telnet.host, obj->aux.telnet.port);
                     if ((m < 0) || (m >= n))
@@ -353,6 +376,7 @@ int format_obj_string(char *buf, int buflen, obj_t *obj, const char *fmt)
                 }
                 break;
             case 'P':                   /* daemon's pid */
+                assert(n > 0);
                 m = snprintf (pdst, n, "%d", (int) getpid());
                 if ((m < 0) || (m >= n))
                     n = 0;
@@ -376,6 +400,7 @@ int format_obj_string(char *buf, int buflen, obj_t *obj, const char *fmt)
             case 'S':                   /* second (00-61) */
                 /* fall-thru */
             case 's':                   /* seconds since unix epoch */
+                assert(n > 0);
                 if (!(m = strftime (pdst, n, tfmt, &tm)))
                     n = 0;
                 else {
@@ -491,42 +516,56 @@ int write_notify_msg(obj_t *console, int priority, char *fmt, ...)
 /*  Writes a notification message to the daemon logfile and all attached
  *    readers & writers of (console).
  */
-    int      n;
     char     buf[MAX_LINE];
     char    *p;
     int      len;
+    int      n;
     va_list  vargs;
-    char    *now;
 
     assert(console != NULL);
     assert(is_console_obj(console));
     assert(fmt != NULL);
 
+    if (!console || !is_console_obj(console) || !fmt) {
+        errno = EINVAL;
+        return(-1);
+    }
+
     p = buf;
     len = sizeof(buf);
     n = snprintf(p, len, "%s", CONMAN_MSG_PREFIX);
     if ((n < 0) || (n >= len)) {
-        return(-1);
+        len = 0;
     }
-    p += n;
-    len -= n;
+    else {
+        p += n;
+        len -= n;
+    }
 
-    va_start(vargs, fmt);
-    n = vsnprintf(p, len, fmt, vargs);
-    va_end(vargs);
-    if ((n < 0) || (n >= len)) {
-        return(-1);
+    if (len > 0) {
+        va_start(vargs, fmt);
+        n = vsnprintf(p, len, fmt, vargs);
+        va_end(vargs);
+        log_msg(priority, "%s", p);
+        if ((n < 0) || (n >= len)) {
+            len = 0;
+        }
+        else {
+            p += n;
+            len -= n;
+        }
     }
-    log_msg(priority, "%s", p);
-    p += n;
-    len -= n;
 
-    now = create_short_time_string(0);
-    n = snprintf(p, len, " at %s%s", now, CONMAN_MSG_SUFFIX);
-    free(now);
-    if ((n < 0) || (n >= len)) {
-        return(-1);
+    assert(len >= 0);
+    if ((size_t) len < strlen(CONMAN_MSG_SUFFIX) + 1) {
+        p = buf + sizeof(buf) - strlen(CONMAN_MSG_SUFFIX) - 1;
+        if (p < buf)
+            p = buf;
+        len = buf + sizeof(buf) - p;
+        log_msg(LOG_WARNING, "Truncated notify message");
     }
+    (void) snprintf(p, len, "%s", CONMAN_MSG_SUFFIX);
+
     notify_console_objs(console, buf);
     return(0);
 }
@@ -757,10 +796,12 @@ static int validate_obj_links(obj_t *obj)
 
 int shutdown_obj(obj_t *obj)
 {
-/*  Shuts down the specified obj.
+/*  Shuts down (and potentially re-opens) the specified obj.
  *  Returns -1 if the obj is ready to be removed from the master objs list
  *    and destroyed; o/w, returns 0.
  */
+    int n;
+
     assert(obj != NULL);
 
     DPRINTF((20, "Entered shutdown_obj: [%s]\n", obj->name));
@@ -768,12 +809,16 @@ int shutdown_obj(obj_t *obj)
     /*  An inactive obj should not be destroyed.
      */
     if (obj->fd < 0) {
+        log_msg(LOG_INFO, "Attempted to shutdown [%s] when fd=%d",
+            obj->name, obj->fd);
         return(0);
     }
     /*  Close the existing connection.
      */
+    tpoll_clear(tp_global, obj->fd, POLLIN | POLLOUT);
     if (close(obj->fd) < 0) {
-        log_err(errno, "Unable to close object [%s]", obj->name);
+        log_msg(LOG_WARNING, "Unable to close [%s] during shutdown: %s",
+            obj->name, strerror(errno));
     }
     obj->fd = -1;
     /*
@@ -787,9 +832,15 @@ int shutdown_obj(obj_t *obj)
     /*  Flush the obj's buffer.
      */
     x_pthread_mutex_lock(&obj->bufLock);
+    n = num_bytes_buffered(obj);
     obj->bufInPtr = obj->bufOutPtr = obj->buf;
+    obj->gotEOF = 0;
     x_pthread_mutex_unlock(&obj->bufLock);
-
+    if (n > 0) {
+        log_msg(LOG_WARNING,
+            "Flushed %d byte%s of unwritten data from [%s]",
+            n, (n == 1 ? "" : "s"), obj->name);
+    }
     /*  Prepare this obj for destruction by unlinking it from all others.
      *    It will be removed from the master objs list by mux_io(),
      *    and the objs list destructor will destroy the obj.
@@ -817,50 +868,36 @@ int shutdown_obj(obj_t *obj)
 }
 
 
-int read_from_obj(obj_t *obj, tpoll_t tp)
+int read_from_obj(obj_t *obj)
 {
 /*  Reads data from the obj's file descriptor and writes it out
  *    to the circular-buffer of each obj in its "readers" list.
- *  Returns >=0 on success, or -1 if the obj is ready to be destroyed.
+ *  Returns the number of bytes read (>=0 on success),
+ *    or -1 if the obj is ready to be destroyed.
  *
- *  The tpoll (tp) ref is an optimization used to "prime" the set for
- *    write_to_obj().  This allows data read to be written out to those objs
- *    not yet traversed during the current list iteration, thereby reducing the
- *    latency.  Without it, these objs would be tpoll()'d on the next list
- *    iteration in mux_io()'s outer-loop.
  *  An obj's circular-buffer is empty when (bufInPtr == bufOutPtr).
- *    Thus, it can hold at most (MAX_BUF_SIZE - 1) bytes of data.
+ *    Thus, it can hold at most (OBJ_BUF_SIZE - 1) bytes of data.
  *  But if the obj is a logfile, its data can grow as a result of the
  *    additional processing.  This routine's internal buffer is reduced
  *    somewhat to reduce the likelihood of log data being dropped.
  */
-    unsigned char buf[(MAX_BUF_SIZE / 2) - 1];
-    int n, m;
+    unsigned char buf[(OBJ_BUF_SIZE / 2) - 1];
+    int n;
+    int isEmpty;
     ListIterator i;
     obj_t *reader;
 
     DPRINTF((20, "Entered read_from_obj: [%s]\n", obj->name));
 
-    assert(obj->fd >= 0);
-
-    if (obj->gotEOF) {
-        /*
-         *  This code path can happen on POLLHUP or POLLERR.
-         */
-        DPRINTF((1, "Attempted to read from [%s] after EOF.\n", obj->name));
-        return(shutdown_obj(obj));
+    if (obj->fd < 0) {
+        return(0);
     }
-    /*  Do not read from an active telnet obj that is not yet in the UP state.
-     *
-     *  The state of telnet objs must be checked here since it can be either
-     *    UP or DOWN.  Before calling tpoll() in server.c:mux_io(), a telnet
-     *    obj must be either UP or PENDING in order to check for POLLIN events.
-     *    But a PENDING telnet obj will be forced into either the UP or DOWN
-     *    state via open_telnet_obj() before read_from_obj() is called.
-     *  The state of unixsock objs does not need to be checked here since it
-     *    must be UP.
+    /*  Do not read from a telnet obj that is not yet in the UP state.
+     *  When the non-blocking connect completes, the fd becomes writable;
+     *    when connection establishment fails, it becomes readable & writable.
+     *  The completion of a PENDING connection is handled in write_to_obj().
      */
-    if (is_telnet_obj(obj) && obj->aux.telnet.state != CONMAN_TELNET_UP) {
+    if (is_telnet_obj(obj) && (obj->aux.telnet.state != CONMAN_TELNET_UP)) {
         return(0);
     }
 again:
@@ -877,9 +914,13 @@ again:
     }
     else if (n == 0) {
         DPRINTF((15, "Read EOF from [%s].\n", obj->name));
+        if (obj->gotEOF) {
+            log_msg(LOG_WARNING, "Read EOF from [%s] after gotEOF", obj->name);
+        }
         obj->gotEOF = 1;
-        tpoll_set(tp, obj->fd, POLLOUT);        /* attempt to flush buffer */
-        return(0);
+        tpoll_clear(tp_global, obj->fd, POLLIN);
+        isEmpty = (obj->bufInPtr == obj->bufOutPtr);
+        return(isEmpty ? shutdown_obj(obj) : 0);
     }
     else {
         DPRINTF((15, "Read %d bytes from [%s].\n", n, obj->name));
@@ -901,20 +942,12 @@ again:
         if (n > 0) {
             i = list_iterator_create(obj->readers);
             while ((reader = list_next(i))) {
-                /*
-                 *  If the obj's gotEOF flag is set,
-                 *    no more data can be written into its buffer.
-                 */
-                if (!reader->gotEOF) {
-                    if (is_logfile_obj(reader)) {
-                        m = write_log_data(reader, buf, n);
-                    }
-                    else {
-                        m = write_obj_data(reader, buf, n, 0);
-                    }
-                    if (m > 0) {
-                        tpoll_set(tp, reader->fd, POLLOUT);
-                    }
+
+                if (is_logfile_obj(reader)) {
+                    write_log_data(reader, buf, n);
+                }
+                else {
+                    write_obj_data(reader, buf, n, 0);
                 }
             }
             list_iterator_destroy(i);
@@ -931,7 +964,7 @@ int write_obj_data(obj_t *obj, const void *src, int len, int isInfo)
  *    an informational message which a client may suppress.
  *  Returns the number of bytes written.
  *
- *  Note that this routine can write at most (MAX_BUF_SIZE - 1) bytes
+ *  Note that this routine can write at most (OBJ_BUF_SIZE - 1) bytes
  *    of data into the object's circular-buffer.
  */
     int avail;
@@ -946,28 +979,15 @@ int write_obj_data(obj_t *obj, const void *src, int len, int isInfo)
      *    no more data can be written into its buffer.
      */
     if (obj->gotEOF) {
-        DPRINTF((1, "Attempted to write to [%s] after EOF.\n", obj->name));
-        return(shutdown_obj(obj));
-    }
-    /*  If the obj is a disconnected console connection,
-     *    data will be discarded so perform a no-op here.
-     */
-    if ( ( is_telnet_obj(obj) &&
-           obj->aux.telnet.state != CONMAN_TELNET_UP ) ||
-         ( is_unixsock_obj(obj) &&
-           obj->aux.unixsock.state != CONMAN_UNIXSOCK_UP ) ||
-         ( is_process_obj(obj) &&
-           obj->aux.process.state != CONMAN_PROCESS_UP ) ||
-         ( is_console_obj(obj) && (obj->fd < 0) ) )
-    {
-        DPRINTF((1, "Attempted to write to disconnected [%s].\n", obj->name));
+        log_msg(LOG_INFO, "Attempted to write %d byte%s to [%s] after EOF",
+            len, (len == 1 ? "" : "s"), obj->name);
         return(0);
     }
     /*  An obj's circular-buffer is empty when (bufInPtr == bufOutPtr).
-     *    Thus, it can hold at most (MAX_BUF_SIZE - 1) bytes of data.
+     *    Thus, it can hold at most (OBJ_BUF_SIZE - 1) bytes of data.
      */
-    if (len >= MAX_BUF_SIZE) {
-        len = MAX_BUF_SIZE - 1;
+    if (len >= OBJ_BUF_SIZE) {
+        len = OBJ_BUF_SIZE - 1;
     }
     x_pthread_mutex_lock(&obj->bufLock);
 
@@ -981,9 +1001,9 @@ int write_obj_data(obj_t *obj, const void *src, int len, int isInfo)
     /*  Assert the buffer's input and output ptrs are valid upon entry.
      */
     assert(obj->bufInPtr >= obj->buf);
-    assert(obj->bufInPtr < &obj->buf[MAX_BUF_SIZE]);
+    assert(obj->bufInPtr < &obj->buf[OBJ_BUF_SIZE]);
     assert(obj->bufOutPtr >= obj->buf);
-    assert(obj->bufOutPtr < &obj->buf[MAX_BUF_SIZE]);
+    assert(obj->bufOutPtr < &obj->buf[OBJ_BUF_SIZE]);
 
     n = len;
 
@@ -991,21 +1011,13 @@ int write_obj_data(obj_t *obj, const void *src, int len, int isInfo)
      *  Data in the circular-buffer will be overwritten if needed since
      *    this routine must not block.
      *  Since an obj's circular-buffer is empty when (bufInPtr == bufOutPtr),
-     *    subtract one byte from 'avail' to account for this sentinel.
+     *    subtract one byte to account for this sentinel.
      */
-    if (obj->bufOutPtr == obj->bufInPtr) {
-        avail = MAX_BUF_SIZE - 1;
-    }
-    else if (obj->bufOutPtr > obj->bufInPtr) {
-        avail = obj->bufOutPtr - obj->bufInPtr - 1;
-    }
-    else {
-        avail = (&obj->buf[MAX_BUF_SIZE] - obj->bufInPtr) +
-            (obj->bufOutPtr - obj->buf) - 1;
-    }
+    avail = OBJ_BUF_SIZE - 1 - num_bytes_buffered(obj);
+
     /*  Copy first chunk of data (ie, up to the end of the buffer).
      */
-    m = MIN(len, &obj->buf[MAX_BUF_SIZE] - obj->bufInPtr);
+    m = MIN(len, &obj->buf[OBJ_BUF_SIZE] - obj->bufInPtr);
     if (m > 0) {
         memcpy(obj->bufInPtr, src, m);
         n -= m;
@@ -1014,7 +1026,7 @@ int write_obj_data(obj_t *obj, const void *src, int len, int isInfo)
         /*
          *  Do the hokey-pokey and perform a circular-buffer wrap-around.
          */
-        if (obj->bufInPtr == &obj->buf[MAX_BUF_SIZE]) {
+        if (obj->bufInPtr == &obj->buf[OBJ_BUF_SIZE]) {
             obj->bufInPtr = obj->buf;
             obj->gotBufWrap = 1;
         }
@@ -1029,20 +1041,26 @@ int write_obj_data(obj_t *obj, const void *src, int len, int isInfo)
      */
     if (len > avail) {
         if (!is_client_obj(obj) || !obj->aux.client.gotSuspend) {
-            log_msg(LOG_NOTICE, "Overwrote %d bytes in buffer for %s",
-                len-avail, obj->name);
+            log_msg(LOG_NOTICE, "Overwrote %d bytes for \"%s\"",
+                len - avail, obj->name);
         }
         obj->bufOutPtr = obj->bufInPtr + 1;
-        if (obj->bufOutPtr == &obj->buf[MAX_BUF_SIZE]) {
+        if (obj->bufOutPtr == &obj->buf[OBJ_BUF_SIZE]) {
             obj->bufOutPtr = obj->buf;
         }
+    }
+    /*  Notify tpoll that data is available for writing
+     *    unless it is a client obj that is currently suspended.
+     */
+    if (!is_client_obj(obj) || !obj->aux.client.gotSuspend) {
+        tpoll_set(tp_global, obj->fd, POLLOUT);
     }
     /*  Assert the buffer's input and output ptrs are valid upon exit.
      */
     assert(obj->bufInPtr >= obj->buf);
-    assert(obj->bufInPtr < &obj->buf[MAX_BUF_SIZE]);
+    assert(obj->bufInPtr < &obj->buf[OBJ_BUF_SIZE]);
     assert(obj->bufOutPtr >= obj->buf);
-    assert(obj->bufOutPtr < &obj->buf[MAX_BUF_SIZE]);
+    assert(obj->bufOutPtr < &obj->buf[OBJ_BUF_SIZE]);
 
     x_pthread_mutex_unlock(&obj->bufLock);
 
@@ -1061,95 +1079,123 @@ int write_to_obj(obj_t *obj)
 /*  Writes data from the obj's circular-buffer out to its file descriptor.
  *  Returns 0 on success, or -1 if the obj is ready to be destroyed.
  */
-    int avail;
-    int n;
+    struct iovec iov[2];
+    int iovcnt = 0;
     int isDead = 0;
+    int n;
 
     DPRINTF((20, "Entered write_to_obj: [%s]\n", obj->name));
 
-    assert(obj->fd >= 0);
-
+    if (obj->fd < 0) {
+        return(0);
+    }
+    /*  The completion of a nonblocking connect() makes the socket writable,
+     *    so complete the telnet obj non-blocking connect here if needed.
+     */
+    if (is_telnet_obj(obj) && (obj->aux.telnet.state == CONMAN_TELNET_PENDING))
+    {
+        open_telnet_obj(obj);
+        return(0);
+    }
     x_pthread_mutex_lock(&obj->bufLock);
 
     /*  Assert the buffer's input and output ptrs are valid upon entry.
      */
     assert(obj->bufInPtr >= obj->buf);
-    assert(obj->bufInPtr < &obj->buf[MAX_BUF_SIZE]);
+    assert(obj->bufInPtr < &obj->buf[OBJ_BUF_SIZE]);
     assert(obj->bufOutPtr >= obj->buf);
-    assert(obj->bufOutPtr < &obj->buf[MAX_BUF_SIZE]);
+    assert(obj->bufOutPtr < &obj->buf[OBJ_BUF_SIZE]);
 
-    /*  The number of available bytes to write out to the file descriptor
-     *    does not take into account data that has wrapped-around in the
-     *    circular-buffer.  This remaining data will be written on the
-     *    next invocation of this routine.  It's just simpler that way.
-     *  If a client is suspended, no data is written out to its fd.
-     *  If a connection goes down, the buffer is cleared.
-     *  Note that if (bufInPtr == bufOutPtr), the obj's buffer is empty.
+    /*  IOV for object buffer cases OIO (wrap-around pt1) & IO (no-wrap).
      */
-    if (is_client_obj(obj) && obj->aux.client.gotSuspend) {
-        avail = 0;
+    if (obj->bufOutPtr > obj->bufInPtr) {
+        iov[0].iov_base = obj->bufOutPtr;
+        iov[0].iov_len = &obj->buf[OBJ_BUF_SIZE] - obj->bufOutPtr;
+        iovcnt = 1;
+        /*
+         *  IOV for object buffer case OIO (wrap-around pt2).
+         */
+        if (obj->bufInPtr > obj->buf) {
+            iov[1].iov_base = obj->buf;
+            iov[1].iov_len = obj->bufInPtr - obj->buf;
+            iovcnt = 2;
+        }
     }
-    else if ( ( is_telnet_obj(obj) &&
-                obj->aux.telnet.state != CONMAN_TELNET_UP ) ||
-              ( is_unixsock_obj(obj) &&
-                obj->aux.unixsock.state != CONMAN_UNIXSOCK_UP ) ||
-              ( is_process_obj(obj) &&
-                obj->aux.process.state != CONMAN_PROCESS_UP ) )
-    {
-        avail = 0;
-        obj->bufInPtr = obj->bufOutPtr = obj->buf;
+    /*  IOV for object buffer cases IOI & OI.
+     */
+    else if (obj->bufInPtr > obj->bufOutPtr) {
+        iov[0].iov_base = obj->bufOutPtr;
+        iov[0].iov_len = obj->bufInPtr - obj->bufOutPtr;
+        iovcnt = 1;
     }
-    else if (obj->bufInPtr >= obj->bufOutPtr) {
-        avail = obj->bufInPtr - obj->bufOutPtr;
-    }
-    else {
-        avail = &obj->buf[MAX_BUF_SIZE] - obj->bufOutPtr;
-    }
-    if (avail > 0) {
+
+    if (iovcnt > 0) {
 again:
-        if ((n = write(obj->fd, obj->bufOutPtr, avail)) < 0) {
+        n = writev(obj->fd, iov, iovcnt);
+        if (n < 0) {
             if (errno == EINTR) {
                 goto again;
             }
             if ((errno != EAGAIN) && (errno != EWOULDBLOCK)) {
                 /*
-                 *  Mark obj for shutdown.
+                 *  If an error occurs while writing to the obj's fd,
+                 *    trigger a shutdown of the obj by setting 'isDead'.
                  */
                 log_msg(LOG_INFO, "Unable to write to [%s]: %s",
                     obj->name, strerror(errno));
-                obj->gotEOF = 1;
-                obj->bufInPtr = obj->bufOutPtr = obj->buf;
+                isDead = 1;
             }
         }
         else if (n > 0) {
             DPRINTF((15, "Wrote %d bytes to [%s].\n", n, obj->name));
             obj->bufOutPtr += n;
-            /*
-             *  Do the hokey-pokey and perform a circular-buffer wrap-around.
-             */
-            if (obj->bufOutPtr == &obj->buf[MAX_BUF_SIZE]) {
-                obj->bufOutPtr = obj->buf;
+            if (obj->bufOutPtr >= &obj->buf[OBJ_BUF_SIZE]) {
+                obj->bufOutPtr -= OBJ_BUF_SIZE;
             }
         }
     }
-
-    /*  If the gotEOF flag in enabled, no additional data can be
-     *    written into the buffer.  And if (bufInPtr == bufOutPtr),
-     *    all data in the buffer has been written out to its fd.
-     *    Thus, the object is ready to be closed, so return a code to
-     *    notify mux_io() that the obj can be deleted from the objs list.
+    /*  If all buffered data has been written out to the fd...
      */
-    if (obj->gotEOF && (obj->bufInPtr == obj->bufOutPtr)) {
-        isDead = 1;
+    if (obj->bufInPtr == obj->bufOutPtr) {
+        /*
+         *  If the gotEOF flag is set, no additional data can be written into
+         *    the buffer.  As such, the object is ready for shutdown.
+         */
+        if (obj->gotEOF) {
+            isDead = 1;
+        }
+        /*  Notify tpoll that all available data has been written.
+         */
+        tpoll_clear(tp_global, obj->fd, POLLOUT);
     }
     /*  Assert the buffer's input and output ptrs are valid upon exit.
      */
     assert(obj->bufInPtr >= obj->buf);
-    assert(obj->bufInPtr < &obj->buf[MAX_BUF_SIZE]);
+    assert(obj->bufInPtr < &obj->buf[OBJ_BUF_SIZE]);
     assert(obj->bufOutPtr >= obj->buf);
-    assert(obj->bufOutPtr < &obj->buf[MAX_BUF_SIZE]);
+    assert(obj->bufOutPtr < &obj->buf[OBJ_BUF_SIZE]);
 
     x_pthread_mutex_unlock(&obj->bufLock);
 
     return(isDead ? shutdown_obj(obj) : 0);
+}
+
+
+static int num_bytes_buffered(obj_t *obj)
+{
+/*  Returns the number of bytes of buffered data in 'obj' waiting to be
+ *    written out to the file descriptor.
+ */
+    int n;
+
+    assert(obj != NULL);
+
+    if (obj->bufInPtr >= obj->bufOutPtr) {
+        n = obj->bufInPtr - obj->bufOutPtr;
+    }
+    else {
+        n = (&obj->buf[OBJ_BUF_SIZE] - obj->bufOutPtr) +
+            (obj->bufInPtr - obj->buf);
+    }
+    return(n);
 }

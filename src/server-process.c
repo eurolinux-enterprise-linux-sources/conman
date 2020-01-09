@@ -1,13 +1,11 @@
 /*****************************************************************************
- *  $Id: server-process.c 1037 2011-04-07 20:02:56Z chris.m.dunlap $
- *****************************************************************************
  *  Written by Chris Dunlap <cdunlap@llnl.gov>.
- *  Copyright (C) 2007-2011 Lawrence Livermore National Security, LLC.
+ *  Copyright (C) 2007-2016 Lawrence Livermore National Security, LLC.
  *  Copyright (C) 2001-2007 The Regents of the University of California.
  *  UCRL-CODE-2002-009.
  *
  *  This file is part of ConMan: The Console Manager.
- *  For details, see <http://conman.googlecode.com/>.
+ *  For details, see <https://dun.github.io/conman/>.
  *
  *  ConMan is free software: you can redistribute it and/or modify it under
  *  the terms of the GNU General Public License as published by the Free
@@ -73,7 +71,7 @@ int is_process_dev(const char *dev, const char *cwd,
     }
     else if ((dev[0] != '/') && (cwd != NULL)) {
         n = snprintf(buf, sizeof(buf), "%s/%s", cwd, dev);
-        if ((n < 0) || (n >= sizeof(buf))) {
+        if ((n < 0) || ((size_t) n >= sizeof(buf))) {
             return(0);
         }
         dev = buf;
@@ -130,14 +128,14 @@ static int search_exec_path(const char *path, const char *src,
             continue;
         }
         n = snprintf(file_buf, sizeof(file_buf), "%s/%s", p, src);
-        if ((n < 0) || (n >= sizeof(file_buf))) {
+        if ((n < 0) || ((size_t) n >= sizeof(file_buf))) {
             continue;
         }
         if (access(file_buf, X_OK) < 0) {
             continue;
         }
         if ((dst != NULL) && (dstlen > 0)) {
-            if (strlcpy(dst, file_buf, dstlen) >= dstlen) {
+            if (strlcpy(dst, file_buf, dstlen) >= (size_t) dstlen) {
                 return(1);
             }
         }
@@ -171,8 +169,10 @@ obj_t * create_process_obj(server_conf_t *conf, char *name, List args,
     i = list_iterator_create(conf->objs);
     while ((process = list_next(i))) {
         if (is_console_obj(process) && !strcmp(process->name, name)) {
-            snprintf(errbuf, errlen,
-                "console [%s] specifies duplicate console name", name);
+            if ((errbuf != NULL) && (errlen > 0)) {
+                snprintf(errbuf, errlen,
+                    "console [%s] specifies duplicate console name", name);
+            }
             break;
         }
     }
@@ -260,7 +260,6 @@ static int disconnect_process_obj(obj_t *process)
  */
     process_obj_t *auxp;
     time_t         tNow;
-    int            n;
     char          *delta_str;
 
     assert(process != NULL);
@@ -271,13 +270,13 @@ static int disconnect_process_obj(obj_t *process)
     auxp = &(process->aux.process);
 
     if (process->fd >= 0) {
+        tpoll_clear(tp_global, process->fd, POLLIN | POLLOUT);
         (void) close(process->fd);
         process->fd = -1;
     }
     if (time(&tNow) == (time_t) -1) {
         log_err(errno, "time() failed");
     }
-    n = tNow - auxp->tStart;
     delta_str = create_time_delta_string(auxp->tStart, tNow);
 
     /*  Notify linked objs when transitioning from an UP state.
@@ -358,6 +357,7 @@ static int connect_process_obj(obj_t *process)
     auxp->pid = pid;
     process->gotEOF = 0;
     auxp->state = CONMAN_PROCESS_UP;
+    tpoll_set(tp_global, process->fd, POLLIN);
 
     /*  Require the connection to be up for a minimum length of time before
      *    resetting the reconnect-delay back to zero.

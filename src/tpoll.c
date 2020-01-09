@@ -1,13 +1,11 @@
 /*****************************************************************************
- *  $Id: tpoll.c 1033 2011-04-06 21:53:48Z chris.m.dunlap $
- *****************************************************************************
  *  Written by Chris Dunlap <cdunlap@llnl.gov>.
- *  Copyright (C) 2007-2011 Lawrence Livermore National Security, LLC.
+ *  Copyright (C) 2007-2016 Lawrence Livermore National Security, LLC.
  *  Copyright (C) 2001-2007 The Regents of the University of California.
  *  UCRL-CODE-2002-009.
  *
  *  This file is part of ConMan: The Console Manager.
- *  For details, see <http://conman.googlecode.com/>.
+ *  For details, see <https://dun.github.io/conman/>.
  *
  *  ConMan is free software: you can redistribute it and/or modify it under
  *  the terms of the GNU General Public License as published by the Free
@@ -94,6 +92,7 @@ struct tpoll {
     int              timers_next_id;    /* next id to be assigned to a timer */
     pthread_mutex_t  mutex;             /* locking primitive                 */
     bool             is_blocked;        /* flag set when blocking on poll()  */
+    bool             is_realloced;      /* flag set after fd_array[] realloc */
     bool             is_signaled;       /* flag set when fd_pipe is signaled */
     bool             is_mutex_inited;   /* flag set when mutex initialized   */
 };
@@ -151,6 +150,7 @@ tpoll_create (int n)
     tp->fd_pipe[ 0 ] = tp->fd_pipe[ 1 ] = -1;
     tp->timers_active = NULL;
     tp->is_blocked = false;
+    tp->is_realloced = false;
     tp->is_signaled = false;
     tp->is_mutex_inited = false;
 
@@ -263,6 +263,7 @@ tpoll_zero (tpoll_t tp, tpoll_zero_t how)
     _tpoll_init (tp, how);
     _tpoll_signal_send (tp);
 
+    DPRINTF((21, "tpoll_zero how=%d.\n", how));
     if ((e = pthread_mutex_unlock (&tp->mutex)) != 0) {
         log_err (errno = e, "Unable to unlock tpoll mutex");
     }
@@ -277,7 +278,7 @@ tpoll_clear (tpoll_t tp, int fd, short int events)
  *    descriptor [fd] within the tpoll object [tp].
  *  Returns 0 on success, or -1 on error.
  */
-    short int events_new;
+    short int events_new = 0;
     int       i;
     int       e;
 
@@ -309,7 +310,7 @@ tpoll_clear (tpoll_t tp, int fd, short int events)
                 tp->num_fds_used--;
 
                 if (tp->max_fd == fd) {
-                    for (i = fd - 1; i > -1; i--) {
+                    for (i = fd - 1; i >= 0; i--) {
                         if (tp->fd_array[ i ].fd > -1) {
                             break;
                         }
@@ -320,6 +321,8 @@ tpoll_clear (tpoll_t tp, int fd, short int events)
             _tpoll_signal_send (tp);
         }
     }
+    DPRINTF((21, "tpoll_clear fd=%d e=0x%02x r=0x%02x.\n",
+        fd, events, events_new));
     if ((e = pthread_mutex_unlock (&tp->mutex)) != 0) {
         log_err (errno = e, "Unable to unlock tpoll mutex");
     }
@@ -332,8 +335,8 @@ tpoll_is_set (tpoll_t tp, int fd, short int events)
 {
 /*  Tests whether any of the bitwise-OR'd [events] have occurred for file
  *    descriptor [fd] within the tpoll object [tp].
- *  Returns true (ie, non-zero) if any of the specified [events] have occurred,
- *    or 0 otherwise.
+ *  Returns >0  if any of the specified [events] have occurred,
+ *    0 if none of the specified [events] have occurred, or -1 on error.
  */
     int rc;
     int e;
@@ -359,6 +362,8 @@ tpoll_is_set (tpoll_t tp, int fd, short int events)
         assert (tp->fd_array[ fd ].fd == fd);
         rc = tp->fd_array[ fd ].revents & events;
     }
+    DPRINTF((21, "tpoll_is_set fd=%d e=0x%02x r=0x%02x rc=%d.\n",
+        fd, events, tp->fd_array[ fd ].revents, rc));
     if ((e = pthread_mutex_unlock (&tp->mutex)) != 0) {
         log_err (errno = e, "Unable to unlock tpoll mutex");
     }
@@ -375,7 +380,7 @@ tpoll_set (tpoll_t tp, int fd, short int events)
  *  Returns 0 on success, or -1 on error.
  */
     int       rc;
-    short int events_new;
+    short int events_new = 0;
     int       e;
 
     if (!tp) {
@@ -401,22 +406,22 @@ tpoll_set (tpoll_t tp, int fd, short int events)
             assert (tp->fd_array[ fd ].revents == 0);
             tp->fd_array[ fd ].fd = fd;
             tp->num_fds_used++;
+            if (fd > tp->max_fd) {
+                tp->max_fd = fd;
+            }
             events_new = events;
         }
         else {
             events_new = tp->fd_array[ fd ].events | events;
         }
         if (tp->fd_array[ fd ].events != events_new) {
-
             tp->fd_array[ fd ].events = events_new;
-
-            if (fd > tp->max_fd) {
-                tp->max_fd = fd;
-            }
             _tpoll_signal_send (tp);
         }
         rc = 0;
     }
+    DPRINTF((21, "tpoll_set fd=%d e=0x%02x r=0x%02x.\n",
+        fd, events, events_new));
     if ((e = pthread_mutex_unlock (&tp->mutex)) != 0) {
         log_err (errno = e, "Unable to unlock tpoll mutex");
     }
@@ -474,6 +479,7 @@ tpoll_timeout_absolute (tpoll_t tp, callback_f cb, void *arg,
     t->next = *t_ptr;
     *t_ptr = t;
 
+    DPRINTF((22, "tpoll timer set id=%d.\n", t->id));
     if ((e = pthread_mutex_unlock (&tp->mutex)) != 0) {
         log_err (errno = e, "Unable to unlock tpoll mutex");
     }
@@ -527,6 +533,7 @@ tpoll_timeout_cancel (tpoll_t tp, int id)
         rc = 0;
     }
     else {
+        DPRINTF((22, "tpoll timer cancel id=%d.\n", (*t_ptr)->id));
         if (*t_ptr == tp->timers_active) {
             _tpoll_signal_send (tp);
         }
@@ -563,7 +570,6 @@ tpoll (tpoll_t tp, int ms)
     _tpoll_timer_t  t;
     int             timeout;
     int             ms_diff;
-    struct pollfd  *fd_array_bak;
     int             n;
     int             e;
 
@@ -577,6 +583,8 @@ tpoll (tpoll_t tp, int ms)
     if ((e = pthread_mutex_lock (&tp->mutex)) != 0) {
         log_err (errno = e, "Unable to lock tpoll mutex");
     }
+    DPRINTF((23, "tpoll enter ms=%d nfd=%d mfd=%d.\n",
+        ms, tp->num_fds_used, tp->max_fd));
     _tpoll_get_timeval (&tv_now, 0);
 
     for (;;) {
@@ -588,6 +596,7 @@ tpoll (tpoll_t tp, int ms)
 
             t = tp->timers_active;
             tp->timers_active = t->next;
+            DPRINTF((22, "tpoll timer dispatch id=%d.\n", t->id));
             /*
              *  Release the mutex while performing the callback function
              *    in case the callback wants to set/cancel another timer.
@@ -641,18 +650,15 @@ tpoll (tpoll_t tp, int ms)
             timeout = (ms_diff > 0) ? ms_diff : 0;
         }
         /*  Poll for events, discarding any on the "signaling pipe".
-         *    A copy of the fd_array ptr is made before calling poll() in order
-         *    to check if _tpoll_grow()'s realloc has changed the memory
-         *    address of the fd_array while the mutex was released.
          */
-        fd_array_bak = tp->fd_array;
-
         tp->is_blocked = true;
 
         if ((e = pthread_mutex_unlock (&tp->mutex)) != 0) {
             log_err (errno = e, "Unable to unlock tpoll mutex");
         }
+        DPRINTF((25, "tpoll poll enter ms=%d mfd=%d.\n", timeout, tp->max_fd));
         n = poll (tp->fd_array, tp->max_fd + 1, timeout);
+        DPRINTF((25, "tpoll poll return n=%d.\n", n));
 
         if ((e = pthread_mutex_lock (&tp->mutex)) != 0) {
             log_err (errno = e, "Unable to lock tpoll mutex");
@@ -662,7 +668,9 @@ tpoll (tpoll_t tp, int ms)
         if (n < 0) {
             break;
         }
-        if (tp->fd_array != fd_array_bak) {
+        if (tp->is_realloced) {
+            DPRINTF((25, "tpoll is_realloced.\n"));
+            tp->is_realloced = false;
             _tpoll_signal_recv (tp);
             continue;
         }
@@ -683,6 +691,7 @@ tpoll (tpoll_t tp, int ms)
             break;
         }
     }
+    DPRINTF((23, "tpoll return n=%d.\n", n));
     if ((e = pthread_mutex_unlock (&tp->mutex)) != 0) {
         log_err (errno = e, "Unable to unlock tpoll mutex");
     }
@@ -763,6 +772,7 @@ _tpoll_signal_send (tpoll_t tp)
         break;
     }
     tp->is_signaled = true;
+    DPRINTF((24, "tpoll signal sent.\n"));
     return;
 }
 
@@ -804,6 +814,7 @@ _tpoll_signal_recv (tpoll_t tp)
         break;
     }
     tp->is_signaled = false;
+    DPRINTF((24, "tpoll signal received.\n"));
     return;
 }
 
@@ -849,6 +860,7 @@ _tpoll_grow (tpoll_t tp, int num_fds_req)
     for (i = tp->num_fds_alloc; i < num_fds_tmp; i++) {
         fd_array_tmp[ i ].fd = -1;
     }
+    tp->is_realloced = true;
     tp->fd_array = fd_array_tmp;
     tp->num_fds_alloc = num_fds_tmp;
     return (0);

@@ -1,16 +1,14 @@
-#******************************************************************************
+###############################################################################
 # ConMan AutoConf Configuration
 #   Process this file with autoconf to produce a configure script.
-#******************************************************************************
-# $Id: configure.ac 1059 2011-04-21 00:20:12Z chris.m.dunlap $
-#******************************************************************************
+###############################################################################
 # Written by Chris Dunlap <cdunlap@llnl.gov>.
-# Copyright (C) 2007-2011 Lawrence Livermore National Security, LLC.
+# Copyright (C) 2007-2016 Lawrence Livermore National Security, LLC.
 # Copyright (C) 2001-2007 The Regents of the University of California.
 # UCRL-CODE-2002-009.
 #
 # This file is part of ConMan: The Console Manager.
-# For details, see <http://conman.googlecode.com/>.
+# For details, see <https://dun.github.io/conman/>.
 #
 # ConMan is free software: you can redistribute it and/or modify it under
 # the terms of the GNU General Public License as published by the Free
@@ -24,7 +22,7 @@
 #
 # You should have received a copy of the GNU General Public License along
 # with ConMan.  If not, see <http://www.gnu.org/licenses/>.
-#******************************************************************************
+###############################################################################
 
 
 dnl Prologue.
@@ -164,7 +162,7 @@ AC_ARG_ENABLE(debug,
 if test "$debug" = yes; then
   test -z "$ac_test_CFLAGS" && CFLAGS=
   test "$ac_cv_prog_cc_g" = yes && DEBUG_CFLAGS="-g"
-  test "$GCC" = yes && DEBUG_CFLAGS="$DEBUG_CFLAGS -Wall"
+  test "$GCC" = yes && DEBUG_CFLAGS="$DEBUG_CFLAGS -Wall -Wsign-compare"
 else
   AC_DEFINE(NDEBUG, 1, [Define if you are building a production release.])
 fi
@@ -299,7 +297,7 @@ dnl
 AC_MSG_CHECKING(for ConMan daemon host name)
 AC_ARG_WITH(conman-host,
   AS_HELP_STRING([--with-conman-host=HOST],
-    [default host name of daemon [[127.0.0.1]]]),
+    [default host name of daemon [127.0.0.1]]),
   [ if test -n "$withval" -a "$withval" != yes -a "$withval" != no; then
       CONMAN_HOST="$withval"
     fi
@@ -316,7 +314,7 @@ dnl
 AC_MSG_CHECKING(for ConMan daemon port number)
 AC_ARG_WITH(conman-port,
   AS_HELP_STRING([--with-conman-port=PORT],
-    [default port number of daemon [[7890]]]),
+    [default port number of daemon [7890]]),
   [ if test `expr match "$withval" '[[0-9]]*$'` -gt 0; then
       CONMAN_PORT="$withval"
     fi
@@ -366,14 +364,6 @@ AC_DEFINE([WITH_PTHREADS], [1],
 dnl Check for random silliness.
 dnl
 AC_CACHE_CHECK([for a sense of humor], ac_cv_humor, ac_cv_humor=yes)
-
-
-AH_BOTTOM(
-[
-/* Override default out_of_memory() macro definition. */
-#include "log.h"
-#define out_of_memory() (log_err(0, "Out of memory"), (void *) NULL)]
-)
 
 
 dnl Epilogue.

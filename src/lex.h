@@ -1,13 +1,11 @@
 /*****************************************************************************
- *  $Id: lex.h 1003 2011-01-26 18:26:06Z chris.m.dunlap $
- *****************************************************************************
  *  Written by Chris Dunlap <cdunlap@llnl.gov>.
- *  Copyright (C) 2007-2011 Lawrence Livermore National Security, LLC.
+ *  Copyright (C) 2007-2016 Lawrence Livermore National Security, LLC.
  *  Copyright (C) 2001-2007 The Regents of the University of California.
  *  UCRL-CODE-2002-009.
  *
  *  This file is part of ConMan: The Console Manager.
- *  For details, see <http://conman.googlecode.com/>.
+ *  For details, see <https://dun.github.io/conman/>.
  *
  *  ConMan is free software: you can redistribute it and/or modify it under
  *  the terms of the GNU General Public License as published by the Free
@@ -69,7 +67,7 @@ enum common_tokens {
     LEX_EOL = 256,                      /* end-of-line token                 */
     LEX_INT,                            /* integer token: ([+-]?[0-9]+)      */
     LEX_STR,                            /* string token                      */
-    LEX_TOK_OFFSET                      /* (cf. LEX_UNTOK macro)             */
+    LEX_TOK_OFFSET                      /* enum value at which toks[] begin  */
 };
 
 
@@ -87,13 +85,12 @@ typedef struct lexer_state *Lex;
 **  Macros  **
 \************/
 
-#define LEX_UNTOK(tok) \
-    ( ((tok) < LEX_TOK_OFFSET) ? (tok) : ((tok) - LEX_TOK_OFFSET) )
+#define LEX_TOK2STR(tokstrs,tok) ((tokstrs)[(tok) - LEX_TOK_OFFSET])
 /*
- *  LEX_TOK_OFFSET specifies the next available enumeration at which
- *    the array of strings supplied to lex_create (toks) can begin.
- *  LEX_UNTOK(tok) undoes this offset adjustment and returns the
- *    offset corresponding to this token within the (toks) array.
+ *  Returns a string in the (tokstrs) array corresponding to the token (tok).
+ *  Only use when (tok) is known to be a valid array index corresponding to a
+ *    string in the (tokstrs) array of strings since no bounds-checking is
+ *    performed.
  */
 
 
@@ -125,7 +122,7 @@ int lex_next(Lex l);
  *  Single-character tokens (eg, punctuation) are specified by
  *    their ASCII code.  Common tokens are specified by the
  *    common_token enumeration.  Tokens specified by the (toks)
- *    array of strings begin at LEX_TOK_OFFSET.  (cf. LEX_UNTOK macro).
+ *    array of strings begin at LEX_TOK_OFFSET.
  */
 
 int lex_prev(Lex l);
@@ -141,6 +138,12 @@ int lex_line(Lex l);
 const char * lex_text(Lex l);
 /*
  *  Returns the string corresponding to the last token returned by lex_next().
+ */
+
+const char * lex_tok_to_str(Lex l, int tok);
+/*
+ *  Returns the string from the lex_create() toks[] array corresponding to the
+ *    token (tok), or NULL if tok is outside of the toks[] array bounds.
  */
 
 

@@ -1,13 +1,11 @@
 /*****************************************************************************
- *  $Id: server-logfile.c 1033 2011-04-06 21:53:48Z chris.m.dunlap $
- *****************************************************************************
  *  Written by Chris Dunlap <cdunlap@llnl.gov>.
- *  Copyright (C) 2007-2011 Lawrence Livermore National Security, LLC.
+ *  Copyright (C) 2007-2016 Lawrence Livermore National Security, LLC.
  *  Copyright (C) 2001-2007 The Regents of the University of California.
  *  UCRL-CODE-2002-009.
  *
  *  This file is part of ConMan: The Console Manager.
- *  For details, see <http://conman.googlecode.com/>.
+ *  For details, see <https://dun.github.io/conman/>.
  *
  *  ConMan is free software: you can redistribute it and/or modify it under
  *  the terms of the GNU General Public License as published by the Free
@@ -39,8 +37,11 @@
 #include "common.h"
 #include "log.h"
 #include "server.h"
+#include "tpoll.h"
 #include "util-file.h"
 #include "util-str.h"
+
+extern tpoll_t tp_global;               /* defined in server.c */
 
 
 int parse_logfile_opts(logopt_t *opts, const char *str,
@@ -84,7 +85,7 @@ int parse_logfile_opts(logopt_t *opts, const char *str,
             optsTmp.enableLock = 1;
         else if (!strcasecmp(tok, "nolock"))
             optsTmp.enableLock = 0;
-	else if (!strcasecmp(tok, "sanitize"))
+        else if (!strcasecmp(tok, "sanitize"))
             optsTmp.enableSanitize = 1;
         else if (!strcasecmp(tok, "nosanitize"))
             optsTmp.enableSanitize = 0;
@@ -148,8 +149,10 @@ obj_t * create_logfile_obj(server_conf_t *conf, char *name,
     list_iterator_destroy(i);
 
     if (logfile) {
-        snprintf(errbuf, errlen, "console [%s] already logging to \"%s\"",
-            logfile->aux.logfile.console->name, pname);
+        if ((errbuf != NULL) && (errlen > 0)) {
+            snprintf(errbuf, errlen, "console [%s] already logging to \"%s\"",
+                logfile->aux.logfile.console->name, pname);
+        }
         return(NULL);
     }
     logfile = create_obj(conf, name, -1, CONMAN_OBJ_LOGFILE);
@@ -190,6 +193,9 @@ obj_t * create_logfile_obj(server_conf_t *conf, char *name,
         console->aux.ipmi.logfile = logfile;
     }
 #endif /* WITH_FREEIPMI */
+    else if (is_test_obj(console)) {
+        console->aux.test.logfile = logfile;
+    }
     else {
         log_err(0, "INTERNAL: Unrecognized console [%s] type=%d",
             console->name, console->type);
@@ -233,7 +239,8 @@ int open_logfile_obj(obj_t *logfile)
     assert(logfile->aux.logfile.console->name != NULL);
 
     if (logfile->fd >= 0) {
-        if (close(logfile->fd) < 0)     /* log err and continue */
+        tpoll_clear(tp_global, logfile->fd, POLLOUT);
+        if (close(logfile->fd) < 0)
             log_msg(LOG_WARNING, "Unable to close logfile \"%s\": %s",
                 logfile->name, strerror(errno));
         logfile->fd = -1;
@@ -276,7 +283,7 @@ int open_logfile_obj(obj_t *logfile)
     if (logfile->aux.logfile.opts.enableLock
             && (get_write_lock(logfile->fd) < 0)) {
         log_msg(LOG_WARNING, "Unable to lock \"%s\"", logfile->name);
-        close(logfile->fd);             /* ignore err on close() */
+        (void) close(logfile->fd);
         logfile->fd = -1;
         return(-1);
     }
@@ -331,6 +338,9 @@ obj_t * get_console_logfile_obj(obj_t *console)
         logfile = console->aux.ipmi.logfile;
     }
 #endif /* WITH_FREEIPMI */
+    else if (is_test_obj(console)) {
+        logfile = console->aux.test.logfile;
+    }
     else {
         log_err(0, "INTERNAL: Unrecognized console [%s] type=%d",
             console->name, console->type);
@@ -357,14 +367,14 @@ int write_log_data(obj_t *log, const void *src, int len)
  *  Returns the number of bytes written into the logfile obj's buffer.
  */
     const int minbuf = 25;              /* cr/lf + timestamp + meta/char */
-    unsigned char buf[MAX_BUF_SIZE - 1];
+    unsigned char buf[OBJ_BUF_SIZE - 1];
     const unsigned char *p;
     unsigned char *q;
     const unsigned char * const qLast = buf + sizeof(buf);
     int n = 0;
 
     assert(is_logfile_obj(log));
-    assert(sizeof(buf) >= minbuf);
+    assert(sizeof(buf) >= (size_t) minbuf);
 
     /*  If no additional processing is needed, listen to Biff Tannen:
      *    "make like a tree and get outta here".

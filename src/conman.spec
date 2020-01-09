@@ -1,34 +1,20 @@
-# $Id: conman.spec 1063 2011-04-21 23:40:05Z chris.m.dunlap $
-
 Name:		conman
-Version:	0.2.7
+Version:	0.2.8
 Release:	1%{?dist}
 
 Summary:	ConMan: The Console Manager
 Group:		Applications/System
 License:	GPLv3+
-URL:		http://conman.googlecode.com/
+URL:		https://dun.github.io/conman/
+Source0:	https://github.com/dun/conman/releases/download/%{name}-%{version}/%{name}-%{version}.tar.xz
 
-Requires:	expect
-BuildRoot:	%{_tmppath}/%{name}-%{version}-%{release}-root-%(%{__id_u} -n)
-
-%if 0%{?chaos} >= 4 || 0%{?rhel} >= 6 || 0%{?fedora} >= 9
 BuildRequires:	freeipmi-devel >= 1.0.4
-%endif
-
-%if 0%{?rhel} >= 6 || 0%{?fedora} >= 7
 BuildRequires:	tcp_wrappers-devel
-%else
-%if 0%{?rhel} < 6 || 0%{?fedora} < 7 || 0%{?rhl}
-BuildRequires:	tcp_wrappers
-%else
-%if "%{_vendor}" == "suse"
-BuildRequires:	tcpd-devel
-%endif
-%endif
-%endif
-
-Source0:	%{name}-%{version}.tar.bz2
+BuildRequires:	systemd
+Requires:	expect
+Requires(post): systemd
+Requires(preun): systemd
+Requires(postun): systemd
 
 %description
 ConMan is a serial console management program designed to support a large
@@ -46,7 +32,7 @@ Its features include:
   - broadcasting client output to multiple consoles
 
 %prep
-%setup
+%setup -q
 
 %build
 %configure
@@ -56,47 +42,37 @@ make %{?_smp_mflags}
 rm -rf "%{buildroot}"
 mkdir -p "%{buildroot}"
 make install DESTDIR="%{buildroot}"
-#
-%if 0%{?_initrddir:1}
-if [ "%{_sysconfdir}/init.d" != "%{_initrddir}" ]; then
-  mkdir -p "%{buildroot}%{_initrddir}"
-  mv "%{buildroot}%{_sysconfdir}/init.d"/* "%{buildroot}%{_initrddir}/"
-fi
-%endif
+rm -f %{buildroot}/%{_sysconfdir}/init.d/conman
+rm -f %{buildroot}/%{_sysconfdir}/default/conman
+rm -f %{buildroot}/%{_sysconfdir}/sysconfig/conman
 
 %clean
 rm -rf "%{buildroot}"
 
 %post
-if [ -x /sbin/chkconfig ]; then /sbin/chkconfig --add conman; fi
+%systemd_post conman.service
 
 %preun
-if [ "$1" = 0 ]; then
-  INITRDDIR=%{?_initrddir:%{_initrddir}}%{!?_initrddir:%{_sysconfdir}/init.d}
-  $INITRDDIR/conman stop >/dev/null 2>&1 || :
-  if [ -x /sbin/chkconfig ]; then /sbin/chkconfig --del conman; fi
-fi
+%systemd_preun conman.service
 
 %postun
-if [ "$1" -ge 1 ]; then
-  INITRDDIR=%{?_initrddir:%{_initrddir}}%{!?_initrddir:%{_sysconfdir}/init.d}
-  $INITRDDIR/conman condrestart >/dev/null 2>&1 || :
-fi
+%systemd_postun_with_restart conman.service
 
 %files
-%defattr(-,root,root,-)
+%{!?_licensedir:%global license %doc}
+%license COPYING
 %doc AUTHORS
-%doc ChangeLog
-%doc COPYING
 %doc DISCLAIMER*
 %doc FAQ
+%doc KEYS
 %doc NEWS
+%doc PLATFORMS
 %doc README
 %doc THANKS
 %config(noreplace) %{_sysconfdir}/conman.conf
-%config(noreplace) %{_sysconfdir}/[dls]*/conman
-%{?_initrddir:%{_initrddir}}%{!?_initrddir:%{_sysconfdir}/init.d}/conman
+%config(noreplace) %{_sysconfdir}/logrotate.d/conman
 %{_bindir}/*
 %{_sbindir}/*
 %{_prefix}/lib/*
 %{_mandir}/*/*
+%{_unitdir}/conman.service

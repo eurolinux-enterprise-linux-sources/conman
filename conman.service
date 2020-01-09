@@ -4,7 +4,10 @@ After=network.target
 
 [Service]
 Type=forking
-ExecStart=/usr/sbin/conmand -c /etc/conman.conf 
+# For installations with large number of users, raise the limit
+# of open file descriptors:
+#LimitNOFILE=10000
+ExecStart=/usr/sbin/conmand -c /etc/conman.conf
 
 [Install]
 WantedBy=multi-user.target

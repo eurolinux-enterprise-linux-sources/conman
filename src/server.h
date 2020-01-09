@@ -1,13 +1,11 @@
 /*****************************************************************************
- *  $Id: server.h 1059 2011-04-21 00:20:12Z chris.m.dunlap $
- *****************************************************************************
  *  Written by Chris Dunlap <cdunlap@llnl.gov>.
- *  Copyright (C) 2007-2011 Lawrence Livermore National Security, LLC.
+ *  Copyright (C) 2007-2016 Lawrence Livermore National Security, LLC.
  *  Copyright (C) 2001-2007 The Regents of the University of California.
  *  UCRL-CODE-2002-009.
  *
  *  This file is part of ConMan: The Console Manager.
- *  For details, see <http://conman.googlecode.com/>.
+ *  For details, see <https://dun.github.io/conman/>.
  *
  *  ConMan is free software: you can redistribute it and/or modify it under
  *  the terms of the GNU General Public License as published by the Free
@@ -37,9 +35,11 @@
 
 #include <sys/types.h>                  /* include before in.h for bsd */
 #include <netinet/in.h>                 /* for struct sockaddr_in            */
-#include <pthread.h>
+#include <pthread.h>                    /* for pthread_mutex_t               */
+#include <stdio.h>                      /* for FILE                          */
 #include <termios.h>                    /* for struct termios, speed_t       */
 #include <time.h>                       /* for time_t                        */
+#include <unistd.h>                     /* for pid_t                         */
 #include "common.h"
 #include "list.h"
 #include "tpoll.h"
@@ -53,6 +53,8 @@
 #define DEFAULT_SEROPT_DATABITS         8
 #define DEFAULT_SEROPT_PARITY           0
 #define DEFAULT_SEROPT_STOPBITS         1
+
+#define MIN_CONNECT_SECS                60
 
 #if WITH_FREEIPMI
 #define IPMI_ENGINE_CONSOLES_PER_THREAD 128
@@ -74,17 +76,19 @@
 #define TELNET_MAX_TIMEOUT              1800
 #define TELNET_MIN_TIMEOUT              15
 
-#define UNIXSOCK_RETRY_TIMEOUT          60
+#define UNIXSOCK_MAX_TIMEOUT            60
+#define UNIXSOCK_MIN_TIMEOUT            1
 
 
-enum obj_type {                         /* type of auxiliary obj (3 bits)    */
-    CONMAN_OBJ_CLIENT,
-    CONMAN_OBJ_LOGFILE,
-    CONMAN_OBJ_PROCESS,
-    CONMAN_OBJ_SERIAL,
-    CONMAN_OBJ_TELNET,
-    CONMAN_OBJ_UNIXSOCK,
-    CONMAN_OBJ_IPMI,
+enum obj_type {                         /* type of auxiliary obj             */
+    CONMAN_OBJ_CLIENT   = 0x01,
+    CONMAN_OBJ_LOGFILE  = 0x02,
+    CONMAN_OBJ_PROCESS  = 0x04,
+    CONMAN_OBJ_SERIAL   = 0x08,
+    CONMAN_OBJ_TELNET   = 0x10,
+    CONMAN_OBJ_UNIXSOCK = 0x20,
+    CONMAN_OBJ_IPMI     = 0x40,
+    CONMAN_OBJ_TEST     = 0x80,
     CONMAN_OBJ_LAST_ENTRY
 };
 
@@ -174,6 +178,7 @@ typedef struct unixsock_obj {           /* UNIXSOCK AUX OBJ DATA:            */
     char            *dev;               /*  unix domain socket device name   */
     struct base_obj *logfile;           /*  log obj ref for console replay   */
     int              timer;             /*  timer id for reconnects          */
+    int              delay;             /*  secs 'til next reconnect attempt */
     unsigned         state:1;           /*  unixsock_state_t conn state      */
 } unixsock_obj_t;
 
@@ -210,6 +215,21 @@ typedef struct ipmi_obj {               /* IPMI AUX OBJ DATA:                */
 } ipmi_obj_t;
 #endif /* WITH_FREEIPMI */
 
+typedef struct test_opt {               /* TEST OBJ OPTIONS:                 */
+    int              numBytes;          /*  num bytes to output per burst    */
+    int              msecMax;           /*  max msecs between bursts, or -1  */
+    int              msecMin;           /*  min msecs between bursts, or -1  */
+    int              probability;       /*  %-probability of burst, [0-100]  */
+} test_opt_t;
+
+typedef struct test_obj {               /* TEST AUX OBJ DATA:                */
+    test_opt_t       opts;              /*  test obj options                 */
+    struct base_obj *logfile;           /*  log obj ref for console replay   */
+    int              timer;             /*  timer id for next burst          */
+    int              numLeft;           /*  num bytes remaining in burst     */
+    char             lastChar;          /*  last char output by test console */
+} test_obj_t;
+
 typedef union aux_obj {
     client_obj_t     client;
     logfile_obj_t    logfile;
@@ -220,21 +240,24 @@ typedef union aux_obj {
 #if WITH_FREEIPMI
     ipmi_obj_t       ipmi;
 #endif /* WITH_FREEIPMI */
+    test_obj_t       test;
 } aux_obj_t;
 
 typedef struct base_obj {               /* BASE OBJ:                         */
     char            *name;              /*  obj name                         */
     int              fd;                /*  file descriptor                  */
-    unsigned char    buf[MAX_BUF_SIZE]; /*  circular-buf to be written to fd */
+    unsigned char    buf[OBJ_BUF_SIZE]; /*  circular-buf to be written to fd */
     unsigned char   *bufInPtr;          /*  ptr for data written in to buf   */
     unsigned char   *bufOutPtr;         /*  ptr for data written out to fd   */
     pthread_mutex_t  bufLock;           /*  lock protecting access to buf    */
     List             readers;           /*  list of objs that read from me   */
     List             writers;           /*  list of objs that write to me    */
-    unsigned         type:3;            /*  enum obj_type of auxiliary obj   */
+    char            *resetCmdRef;       /*  console reset cmd string ref     */
+    pid_t            resetCmdPid;       /*  console reset cmd active pid     */
+    int              resetCmdTimer;     /*  console reset cmd timer id       */
+    unsigned         type;              /*  enum obj_type of auxiliary obj   */
     unsigned         gotBufWrap:1;      /*  true if circular-buf has wrapped */
     unsigned         gotEOF:1;          /*  true if obj got EOF on last read */
-    unsigned         gotReset:1;        /*  true if resetting a console obj  */
     aux_obj_t        aux;               /*  auxiliary obj data union         */
 } obj_t;
 
@@ -248,6 +271,7 @@ typedef struct server_conf {
     char            *logFmtName;        /* name with conversion specifiers   */
     FILE            *logFilePtr;        /* msg log file ptr, !closed at exit */
     int              logFileLevel;      /* level at which to log msg to file */
+    int              numOpenFiles;      /* rlimit for number of open files   */
     char            *pidFileName;       /* file to which pid is written      */
     char            *resetCmd;          /* cmd to invoke for reset esc-seq   */
     int              syslogFacility;    /* syslog facility or -1 if disabled */
@@ -266,6 +290,7 @@ typedef struct server_conf {
     ipmiopt_t        globalIpmiOpts;    /* global opts for ipmi objects      */
     int              numIpmiObjs;       /* number of ipmi consoles in config */
 #endif /* WITH_FREEIPMI */
+    test_opt_t       globalTestOpts;    /* global opts for test objs         */
     unsigned         enableCoreDump:1;  /* true if core dumps are enabled    */
     unsigned         enableKeepAlive:1; /* true if using TCP keep-alive      */
     unsigned         enableLoopBack:1;  /* true if only listening on loopback*/
@@ -317,22 +342,23 @@ typedef struct client_args {
 
 /*  Macros
  */
+#define CONMAN_OBJ_IS_CONSOLE \
+  ( CONMAN_OBJ_PROCESS  |     \
+    CONMAN_OBJ_SERIAL   |     \
+    CONMAN_OBJ_TELNET   |     \
+    CONMAN_OBJ_UNIXSOCK |     \
+    CONMAN_OBJ_IPMI     |     \
+    CONMAN_OBJ_TEST           \
+  )
 #define is_client_obj(OBJ)   (OBJ->type == CONMAN_OBJ_CLIENT)
 #define is_ipmi_obj(OBJ)     (OBJ->type == CONMAN_OBJ_IPMI)
 #define is_logfile_obj(OBJ)  (OBJ->type == CONMAN_OBJ_LOGFILE)
 #define is_process_obj(OBJ)  (OBJ->type == CONMAN_OBJ_PROCESS)
 #define is_serial_obj(OBJ)   (OBJ->type == CONMAN_OBJ_SERIAL)
 #define is_telnet_obj(OBJ)   (OBJ->type == CONMAN_OBJ_TELNET)
+#define is_test_obj(OBJ)     (OBJ->type == CONMAN_OBJ_TEST)
 #define is_unixsock_obj(OBJ) (OBJ->type == CONMAN_OBJ_UNIXSOCK)
-
-#define is_console_obj(OBJ) \
-( \
-  is_telnet_obj(OBJ)   || \
-  is_ipmi_obj(OBJ)     || \
-  is_process_obj(OBJ)  || \
-  is_serial_obj(OBJ)   || \
-  is_unixsock_obj(OBJ)    \
-)
+#define is_console_obj(OBJ)  (OBJ->type &  CONMAN_OBJ_IS_CONSOLE)
 
 
 /*  server-conf.c
@@ -420,7 +446,7 @@ void unlink_obj(obj_t *obj);
 
 int shutdown_obj(obj_t *obj);
 
-int read_from_obj(obj_t *obj, tpoll_t tp);
+int read_from_obj(obj_t *obj);
 
 int write_obj_data(obj_t *obj, const void *src, int len, int isInfo);
 
@@ -470,6 +496,23 @@ int open_telnet_obj(obj_t *telnet);
 int process_telnet_escapes(obj_t *telnet, void *src, int len);
 
 int send_telnet_cmd(obj_t *telnet, int cmd, int opt);
+
+
+/*  server-test.c
+ */
+int is_test_dev(const char *dev);
+
+int init_test_opts(test_opt_t *opts);
+
+int parse_test_opts(test_opt_t *opts, const char *str,
+    char *errbuf, int errlen);
+
+obj_t * create_test_obj(server_conf_t *conf, char *name,
+    test_opt_t *opts, char *errbuf, int errlen);
+
+int open_test_obj(obj_t *test);
+
+int read_test_obj(obj_t *test);
 
 
 /*  server-unixsock.c
