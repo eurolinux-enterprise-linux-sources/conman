@@ -49,6 +49,7 @@ start() {
 		RETVAL=1
 	elif ! pidof $DAEMON_BASENAME >/dev/null 2>&1; then
 		# No daemon process seen: start
+		[ $NOFILE ] && ulimit -n "$NOFILE"
 		daemon $NICE --user "$USER" "$DAEMON_NAME" -c "$CONFIG" $OPTIONS
 		RETVAL=$?
 	else

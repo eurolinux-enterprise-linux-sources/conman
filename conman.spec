@@ -1,6 +1,6 @@
 Name:               conman
 Version:            0.2.5
-Release:            2.3%{?dist}
+Release:            2.4%{?dist}
 Summary:            The Console Manager
 
 Group:              Applications/System
@@ -9,6 +9,7 @@ URL:                http://home.gna.org/conman/
 Source0:            http://download.gna.org/%{name}/%{version}/%{name}-%{version}.tar.bz2
 Source1:            %{name}.init
 Source2:            %{name}.logrotate
+Patch1:             conman-0.2.5-openfiles.patch
 BuildRoot:          %{_tmppath}/%{name}-%{version}-%{release}-root-%(%{__id_u} -n)
 
 Requires:           logrotate
@@ -33,6 +34,7 @@ Its features include:
 
 %prep
 %setup -q
+%patch1 -b .openfiles -p1
 
 %build
 # not really lib material, more like share
@@ -103,6 +105,10 @@ fi
 %{_mandir}/*/*
 
 %changelog
+* Wed Dec 14 2011 Denys Vlasenko <dvlasenk@redhat.com> - 0.2.5-2.4
+- Allow configuration of the maximum number of open files.
+- Resolves: rhbz#738967.
+
 * Wed May 12 2010 Denys Vlasenko <dvlasenk@redhat.com> - 0.2.5-2.3
 - Fixed location and logic of initscript.
 - Resolves: rhbz#576846, rhbz#576247.
